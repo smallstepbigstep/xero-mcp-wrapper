@@ -1,17 +1,38 @@
 {
-  "name": "xero-mcp-wrapper",
-  "version": "1.0.0",
-  "description": "Express.js wrapper for Xero API with MCP-style endpoints",
+  "name": "xero-api-wrapper-chatgpt",
+  "version": "2.0.0",
+  "description": "ChatGPT-compatible Xero API wrapper with OAuth 2.0 discovery endpoints",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "echo \"No tests specified\" && exit 0"
   },
+  "keywords": [
+    "xero",
+    "api",
+    "oauth",
+    "chatgpt",
+    "bookkeeping",
+    "accounting",
+    "mcp"
+  ],
+  "author": "JHK Bookkeeping Agent",
+  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "axios": "^1.6.2"
+    "axios": "^1.6.0"
   },
   "engines": {
-    "node": "18.x"
-  }
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/xero-api-wrapper"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/xero-api-wrapper/issues"
+  },
+  "homepage": "https://github.com/your-username/xero-api-wrapper#readme"
 }
