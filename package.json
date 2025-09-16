@@ -1,47 +1,41 @@
 {
-  "name": "xero-api-wrapper-chatgpt",
-  "version": "2.4.0",
-  "description": "Fully optimized ChatGPT-compatible Xero API wrapper with comprehensive filtering, pagination, and enhanced bookkeeping functionality",
+  "name": "xero-mcp-wrapper",
+  "version": "2.4.1",
+  "description": "Xero API wrapper with ChatGPT OAuth integration and optimized pagination",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "echo \"No tests specified\" && exit 0"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
     "xero",
     "api",
     "oauth",
     "chatgpt",
+    "mcp",
     "bookkeeping",
     "accounting",
-    "mcp",
-    "proxy",
-    "callback",
-    "enhanced",
-    "detection",
-    "filtering",
     "pagination",
-    "optimization",
-    "full-featured"
+    "optimization"
   ],
-  "author": "JHK Bookkeeping Agent",
+  "author": "JHK Bookkeeping Assistant",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "axios": "^1.6.0"
+    "axios": "^1.5.0"
   },
   "engines": {
     "node": ">=16.0.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-username/xero-api-wrapper"
+    "url": "https://github.com/your-username/xero-mcp-wrapper.git"
   },
+  "homepage": "https://github.com/your-username/xero-mcp-wrapper#readme",
   "bugs": {
-    "url": "https://github.com/your-username/xero-api-wrapper/issues"
-  },
-  "homepage": "https://github.com/your-username/xero-api-wrapper#readme"
+    "url": "https://github.com/your-username/xero-mcp-wrapper/issues"
+  }
 }
 
