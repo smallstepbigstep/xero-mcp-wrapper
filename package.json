@@ -1,7 +1,7 @@
 {
   "name": "xero-api-wrapper-chatgpt",
-  "version": "2.1.0",
-  "description": "ChatGPT-compatible Xero API wrapper with OAuth 2.0 discovery endpoints and ChatGPT client integration",
+  "version": "2.2.0",
+  "description": "ChatGPT-compatible Xero API wrapper with OAuth 2.0 discovery endpoints, ChatGPT client integration, and callback proxy support",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -15,7 +15,9 @@
     "chatgpt",
     "bookkeeping",
     "accounting",
-    "mcp"
+    "mcp",
+    "proxy",
+    "callback"
   ],
   "author": "JHK Bookkeeping Agent",
   "license": "MIT",
@@ -36,5 +38,4 @@
   },
   "homepage": "https://github.com/your-username/xero-api-wrapper#readme"
 }
-
 
