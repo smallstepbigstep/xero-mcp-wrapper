@@ -39,6 +39,7 @@ const validateEnv = () => {
   }
   console.log('✅ Environment variables validated');
   console.log('🤖 ChatGPT OAuth configured for Client ID:', CHATGPT_OAUTH.client_id);
+  console.log('🔄 Using callback proxy approach for ChatGPT integration');
 };
 
 // OAuth Discovery Endpoints for ChatGPT Integration
@@ -97,8 +98,8 @@ app.get('/.well-known/jwks.json', (req, res) => {
   });
 });
 
-// OAuth Endpoints for ChatGPT
-// ============================
+// OAuth Endpoints for ChatGPT (with Callback Proxy)
+// =================================================
 
 // OAuth Authorization endpoint (handles both ChatGPT and legacy requests)
 app.get('/oauth/authorize', (req, res) => {
@@ -118,6 +119,7 @@ app.get('/oauth/authorize', (req, res) => {
   
   if (isChatGPTRequest) {
     console.log('✅ ChatGPT OAuth request detected');
+    console.log('🔄 Using callback proxy approach');
     
     // Validate ChatGPT redirect URI
     if (redirect_uri !== CHATGPT_OAUTH.redirect_uri) {
@@ -144,7 +146,8 @@ app.get('/oauth/authorize', (req, res) => {
     }
   };
   
-  // Build Xero OAuth URL (always use our Xero app credentials for the actual auth)
+  // Build Xero OAuth URL - ALWAYS use our server's callback URL
+  // This is the key change: we use our callback, not ChatGPT's
   const xeroAuthUrl = `https://login.xero.com/identity/connect/authorize?` +
     `response_type=code&` +
     `client_id=${process.env.XERO_CLIENT_ID}&` +
@@ -152,7 +155,7 @@ app.get('/oauth/authorize', (req, res) => {
     `scope=offline_access accounting.transactions accounting.contacts accounting.settings accounting.reports.read&` +
     `state=${state}`;
   
-  console.log(`🔗 Redirecting to Xero OAuth`);
+  console.log(`🔗 Redirecting to Xero OAuth with our callback URL`);
   res.redirect(xeroAuthUrl);
 });
 
@@ -260,12 +263,21 @@ app.post('/oauth/token', async (req, res) => {
   }
 });
 
-// OAuth Callback (handles Xero redirect)
+// OAuth Callback (PROXY APPROACH - receives from Xero, forwards to ChatGPT)
 app.get('/oauth/callback', async (req, res) => {
   const { code, state, error } = req.query;
   
   if (error) {
-    console.error('❌ OAuth error:', error);
+    console.error('❌ OAuth error from Xero:', error);
+    
+    // If we have state, check if it's a ChatGPT request
+    if (state && tokenStore[state] && tokenStore[state].is_chatgpt) {
+      const { original_params } = tokenStore[state];
+      console.log('🔗 Forwarding error to ChatGPT');
+      const redirectUrl = `${original_params.redirect_uri}?error=${error}&error_description=${encodeURIComponent('OAuth authorization failed')}&state=${original_params.original_state}`;
+      return res.redirect(redirectUrl);
+    }
+    
     return res.status(400).json({ 
       error: 'OAuth authorization failed', 
       details: error 
@@ -273,6 +285,7 @@ app.get('/oauth/callback', async (req, res) => {
   }
 
   if (!code || !state || !tokenStore[state]) {
+    console.error('❌ Invalid OAuth callback parameters');
     return res.status(400).json({ 
       error: 'Invalid OAuth callback parameters' 
     });
@@ -292,7 +305,7 @@ app.get('/oauth/callback', async (req, res) => {
         client_id: process.env.XERO_CLIENT_ID,
         client_secret: process.env.XERO_CLIENT_SECRET,
         code: code,
-        redirect_uri: `${baseUrl}/oauth/callback`
+        redirect_uri: `${baseUrl}/oauth/callback` // Our callback URL, not ChatGPT's
       }), {
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded'
@@ -301,7 +314,7 @@ app.get('/oauth/callback', async (req, res) => {
     );
 
     const { access_token, refresh_token, expires_in } = tokenResponse.data;
-    console.log('✅ Tokens received successfully');
+    console.log('✅ Tokens received successfully from Xero');
 
     // Get tenant connections
     console.log('🔄 Fetching tenant connections...');
@@ -329,9 +342,14 @@ app.get('/oauth/callback', async (req, res) => {
     delete tokenStore[state];
 
     if (is_chatgpt && original_params && original_params.redirect_uri) {
-      // For ChatGPT, redirect back with the authorization code
-      console.log('🔗 Redirecting back to ChatGPT');
+      // PROXY APPROACH: Forward to ChatGPT with our session ID as the code
+      console.log('🔗 Proxying callback to ChatGPT');
+      console.log('  ChatGPT Callback URL:', original_params.redirect_uri);
+      console.log('  Session ID:', sessionId);
+      console.log('  Original State:', original_params.original_state);
+      
       const redirectUrl = `${original_params.redirect_uri}?code=${sessionId}&state=${original_params.original_state}`;
+      console.log('🚀 Redirecting to:', redirectUrl);
       res.redirect(redirectUrl);
     } else {
       // For legacy/direct access, show success page
@@ -360,6 +378,7 @@ app.get('/oauth/callback', async (req, res) => {
     
     if (is_chatgpt && original_params && original_params.redirect_uri) {
       // For ChatGPT, redirect back with error
+      console.log('🔗 Forwarding error to ChatGPT');
       const redirectUrl = `${original_params.redirect_uri}?error=server_error&error_description=${encodeURIComponent(error.message)}&state=${original_params.original_state}`;
       res.redirect(redirectUrl);
     } else {
@@ -423,10 +442,11 @@ app.get('/health', (req, res) => {
     status: 'healthy', 
     service: 'xero-mcp-wrapper',
     timestamp: new Date().toISOString(),
-    version: '2.1.0',
+    version: '2.2.0',
     environment: process.env.NODE_ENV || 'development',
     chatgpt_ready: true,
-    chatgpt_client_configured: true
+    chatgpt_client_configured: true,
+    callback_proxy_enabled: true
   });
 });
 
@@ -847,9 +867,10 @@ app.get('/api', (req, res) => {
   const baseUrl = getBaseUrl(req);
   res.json({
     service: 'Xero API Wrapper',
-    version: '2.1.0',
+    version: '2.2.0',
     chatgpt_compatible: true,
     chatgpt_client_configured: true,
+    callback_proxy_enabled: true,
     oauth: {
       authorization_endpoint: `${baseUrl}/oauth/authorize`,
       token_endpoint: `${baseUrl}/oauth/token`,
@@ -888,7 +909,7 @@ app.get('/mcp', (req, res) => {
   const baseUrl = getBaseUrl(req);
   res.json({
     service: 'Xero MCP Wrapper (Legacy)',
-    version: '2.1.0',
+    version: '2.2.0',
     note: 'This is the legacy MCP interface. Use /api endpoints for ChatGPT integration.',
     authentication: {
       oauth_url: `${baseUrl}/`,
@@ -991,6 +1012,7 @@ const startServer = () => {
     console.log(`🔐 Xero Client Secret: ${process.env.XERO_CLIENT_SECRET ? 'SET' : 'MISSING'}`);
     console.log(`🤖 ChatGPT Ready: YES`);
     console.log(`🎯 ChatGPT Client ID: ${CHATGPT_OAUTH.client_id}`);
+    console.log(`🔄 Callback Proxy: ENABLED`);
   });
 };
 
