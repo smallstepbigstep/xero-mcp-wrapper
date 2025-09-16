@@ -715,7 +715,7 @@ app.get('/health', (req, res) => {
     status: 'healthy', 
     service: 'xero-mcp-wrapper',
     timestamp: new Date().toISOString(),
-    version: '2.4.1',
+    version: '2.4.2',
     environment: process.env.NODE_ENV || 'development',
     chatgpt_ready: true,
     chatgpt_client_configured: true,
@@ -725,7 +725,8 @@ app.get('/health', (req, res) => {
     pagination_enabled: true,
     pagination_fix: 'xero_page_based',
     optimization_level: 'full',
-    cache_enabled: true
+    cache_enabled: true,
+    reports_crash_fix: true
   });
 });
 
@@ -1057,12 +1058,13 @@ app.post('/api/invoices', validateSession, async (req, res) => {
   }
 });
 
-// Enhanced Get reports with filtering
+// Enhanced Get reports with FIXED error handling
 app.get('/api/reports/:reportType', validateSession, async (req, res) => {
+  const { reportType } = req.params; // ✅ Move outside try block for proper scoping
+  
   try {
     const { access_token, connections } = req.session;
     const tenantId = req.query.tenant || connections[0]?.tenantId;
-    const { reportType } = req.params;
     
     if (!tenantId) {
       return res.status(400).json({ error: 'No tenant ID specified' });
@@ -1078,16 +1080,37 @@ app.get('/api/reports/:reportType', validateSession, async (req, res) => {
     
     console.log('📋 Report parameters:', params);
     
+    // Add specific handling for common report types
+    const supportedReports = [
+      'ProfitAndLoss',
+      'BalanceSheet', 
+      'CashSummary',
+      'AgedReceivables',
+      'AgedPayables',
+      'TrialBalance',
+      'BankSummary'
+    ];
+    
+    if (!supportedReports.includes(reportType)) {
+      console.log(`⚠️ Unsupported report type: ${reportType}`);
+      return res.status(400).json({
+        error: 'Unsupported report type',
+        supported_reports: supportedReports,
+        requested_report: reportType
+      });
+    }
+    
     const response = await axios.get(reportUrl, {
       headers: {
         'Authorization': `Bearer ${access_token}`,
         'Xero-tenant-id': tenantId,
         'Accept': 'application/json'
       },
-      params: params
+      params: params,
+      timeout: 30000 // 30 second timeout for reports
     });
 
-    console.log(`✅ Retrieved ${reportType} report`);
+    console.log(`✅ Retrieved ${reportType} report successfully`);
     
     const reportData = response.data.Reports?.[0] || response.data;
     
@@ -1101,11 +1124,35 @@ app.get('/api/reports/:reportType', validateSession, async (req, res) => {
     });
 
   } catch (error) {
+    // ✅ Fixed: reportType is now properly in scope
     console.error(`❌ ${reportType} report error:`, error.response?.data || error.message);
-    res.status(500).json({ 
-      error: `Failed to fetch ${reportType} report`, 
-      details: error.response?.data || error.message 
-    });
+    
+    // Provide specific error handling for different scenarios
+    if (error.code === 'ECONNABORTED') {
+      res.status(504).json({ 
+        error: `${reportType} report request timed out`,
+        details: 'Xero reporting service may be temporarily unavailable',
+        retry_suggestion: 'Please try again in a few minutes'
+      });
+    } else if (error.response?.status === 400) {
+      res.status(400).json({ 
+        error: `Invalid ${reportType} report request`,
+        details: error.response?.data || error.message,
+        suggestion: 'Check report parameters and try again'
+      });
+    } else if (error.response?.status === 403) {
+      res.status(403).json({ 
+        error: `Access denied for ${reportType} report`,
+        details: 'Your Xero subscription may not include this report type',
+        suggestion: 'Contact your Xero administrator'
+      });
+    } else {
+      res.status(500).json({ 
+        error: `Failed to fetch ${reportType} report`, 
+        details: error.response?.data || error.message,
+        report_type: reportType
+      });
+    }
   }
 });
 
@@ -1328,17 +1375,19 @@ app.get('/api', (req, res) => {
   const baseUrl = getBaseUrl(req);
   res.json({
     service: 'Xero API Wrapper',
-    version: '2.4.1',
+    version: '2.4.2',
     chatgpt_compatible: true,
     optimization_level: 'full',
     pagination_fix: 'xero_page_based',
+    reports_crash_fix: true,
     features: {
       filtering: true,
       pagination: true,
       pagination_fix: true,
       quick_filters: true,
       enhanced_responses: true,
-      smart_caching: true
+      smart_caching: true,
+      reports_error_handling: true
     },
     oauth: {
       authorization_endpoint: `${baseUrl}/oauth/authorize`,
@@ -1379,7 +1428,19 @@ app.get('/api', (req, res) => {
         }
       },
       'POST /api/invoices': 'Create a new invoice',
-      'GET /api/reports/:reportType': 'Get financial reports (ProfitAndLoss, BalanceSheet, etc.)',
+      'GET /api/reports/:reportType': {
+        description: 'Get financial reports with enhanced error handling',
+        supported_reports: [
+          'ProfitAndLoss',
+          'BalanceSheet', 
+          'CashSummary',
+          'AgedReceivables',
+          'AgedPayables',
+          'TrialBalance',
+          'BankSummary'
+        ],
+        note: 'Fixed crash issue with proper error scoping'
+      },
       'GET /api/quick/:filter': {
         description: 'Quick filters for common bookkeeping queries',
         available_filters: [
@@ -1415,7 +1476,8 @@ app.get('/api', (req, res) => {
       open_invoices: `${baseUrl}/api/invoices?status=AUTHORISED&limit=20`,
       next_page: `${baseUrl}/api/invoices?limit=20&offset=20`,
       active_contacts: `${baseUrl}/api/contacts?include_archived=false&limit=50`,
-      quick_open_invoices: `${baseUrl}/api/quick/open-invoices`
+      quick_open_invoices: `${baseUrl}/api/quick/open-invoices`,
+      aged_receivables: `${baseUrl}/api/reports/AgedReceivables`
     },
     response_format: {
       success: true,
@@ -1523,7 +1585,7 @@ const startServer = () => {
   validateEnv();
   
   app.listen(port, '0.0.0.0', () => {
-    console.log(`🚀 Xero API Wrapper v2.4.1 running on 0.0.0.0:${port}`);
+    console.log(`🚀 Xero API Wrapper v2.4.2 running on 0.0.0.0:${port}`);
     console.log(`🔗 OAuth URL: http://localhost:${port}/oauth/authorize`);
     console.log(`🏥 Health check: http://localhost:${port}/health`);
     console.log(`📚 API docs: http://localhost:${port}/api`);
@@ -1538,6 +1600,7 @@ const startServer = () => {
     console.log(`🔍 Full Filtering & Pagination: ENABLED`);
     console.log(`📄 Xero Page-Based Pagination: FIXED`);
     console.log(`💾 Smart Caching: ENABLED`);
+    console.log(`📊 Reports Crash Fix: ENABLED`);
     console.log(`⚡ Optimization Level: FULL`);
   });
 };
