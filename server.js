@@ -9,6 +9,13 @@ const port = process.env.PORT || 3000;
 // In-memory token storage (use Redis/database in production)
 let tokenStore = {};
 
+// ChatGPT OAuth credentials
+const CHATGPT_OAUTH = {
+  client_id: '2EAFE6AEB1764228B44A9ECAE105E19A',
+  client_secret: 'sZQD8eAmNQiLsm0-X7Z74vOH-z41oBDXz9HFo2mxQsQT5GcG',
+  redirect_uri: 'https://chat.openai.com/aip/g-d62f46e08c6be54d78a07a082ce3cc2fe8be23d7/oauth/callback'
+};
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -31,6 +38,7 @@ const validateEnv = () => {
     process.exit(1);
   }
   console.log('✅ Environment variables validated');
+  console.log('🤖 ChatGPT OAuth configured for Client ID:', CHATGPT_OAUTH.client_id);
 };
 
 // OAuth Discovery Endpoints for ChatGPT Integration
@@ -92,7 +100,7 @@ app.get('/.well-known/jwks.json', (req, res) => {
 // OAuth Endpoints for ChatGPT
 // ============================
 
-// OAuth Authorization endpoint (redirects to Xero)
+// OAuth Authorization endpoint (handles both ChatGPT and legacy requests)
 app.get('/oauth/authorize', (req, res) => {
   const baseUrl = getBaseUrl(req);
   const state = generateState();
@@ -100,9 +108,33 @@ app.get('/oauth/authorize', (req, res) => {
   // Store the original OAuth parameters for later use
   const { client_id, redirect_uri, scope, response_type, state: original_state } = req.query;
   
+  console.log('🔗 OAuth authorization request received:');
+  console.log('  Client ID:', client_id);
+  console.log('  Redirect URI:', redirect_uri);
+  console.log('  Scope:', scope);
+  
+  // Check if this is a ChatGPT request
+  const isChatGPTRequest = client_id === CHATGPT_OAUTH.client_id;
+  
+  if (isChatGPTRequest) {
+    console.log('✅ ChatGPT OAuth request detected');
+    
+    // Validate ChatGPT redirect URI
+    if (redirect_uri !== CHATGPT_OAUTH.redirect_uri) {
+      console.error('❌ Invalid ChatGPT redirect URI:', redirect_uri);
+      return res.status(400).json({ 
+        error: 'invalid_request',
+        error_description: 'Invalid redirect_uri for ChatGPT client'
+      });
+    }
+  } else {
+    console.log('🔗 Legacy OAuth request detected');
+  }
+  
   // Store state and original parameters for validation
   tokenStore[state] = { 
     created: Date.now(),
+    is_chatgpt: isChatGPTRequest,
     original_params: {
       client_id,
       redirect_uri,
@@ -112,7 +144,7 @@ app.get('/oauth/authorize', (req, res) => {
     }
   };
   
-  // Build Xero OAuth URL
+  // Build Xero OAuth URL (always use our Xero app credentials for the actual auth)
   const xeroAuthUrl = `https://login.xero.com/identity/connect/authorize?` +
     `response_type=code&` +
     `client_id=${process.env.XERO_CLIENT_ID}&` +
@@ -120,7 +152,7 @@ app.get('/oauth/authorize', (req, res) => {
     `scope=offline_access accounting.transactions accounting.contacts accounting.settings accounting.reports.read&` +
     `state=${state}`;
   
-  console.log(`🔗 OAuth authorization initiated for ChatGPT integration`);
+  console.log(`🔗 Redirecting to Xero OAuth`);
   res.redirect(xeroAuthUrl);
 });
 
@@ -128,65 +160,58 @@ app.get('/oauth/authorize', (req, res) => {
 app.post('/oauth/token', async (req, res) => {
   const { grant_type, code, redirect_uri, client_id, client_secret, refresh_token } = req.body;
   
+  console.log('🔄 Token request received:');
+  console.log('  Grant type:', grant_type);
+  console.log('  Client ID:', client_id);
+  console.log('  Redirect URI:', redirect_uri);
+  
+  // Validate ChatGPT client credentials
+  if (client_id === CHATGPT_OAUTH.client_id) {
+    if (client_secret !== CHATGPT_OAUTH.client_secret) {
+      console.error('❌ Invalid ChatGPT client secret');
+      return res.status(401).json({ error: 'invalid_client' });
+    }
+    
+    if (redirect_uri && redirect_uri !== CHATGPT_OAUTH.redirect_uri) {
+      console.error('❌ Invalid ChatGPT redirect URI');
+      return res.status(400).json({ error: 'invalid_grant' });
+    }
+    
+    console.log('✅ ChatGPT client credentials validated');
+  }
+  
   try {
     if (grant_type === 'authorization_code') {
       // Handle authorization code flow
-      const baseUrl = getBaseUrl(req);
+      console.log('🔄 Processing authorization code grant...');
       
-      console.log('🔄 Processing OAuth token request...');
+      // The 'code' here is actually our session ID from the callback
+      const session = tokenStore[code];
       
-      // Exchange code with Xero
-      const tokenResponse = await axios.post('https://identity.xero.com/connect/token', 
-        new URLSearchParams({
-          grant_type: 'authorization_code',
-          client_id: process.env.XERO_CLIENT_ID,
-          client_secret: process.env.XERO_CLIENT_SECRET,
-          code: code,
-          redirect_uri: `${baseUrl}/oauth/callback`
-        }), {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
-          }
-        }
-      );
-
-      const { access_token, refresh_token: xero_refresh_token, expires_in } = tokenResponse.data;
+      if (!session) {
+        console.error('❌ Invalid authorization code/session');
+        return res.status(400).json({ error: 'invalid_grant' });
+      }
       
-      // Get tenant connections
-      const connectionsResponse = await axios.get('https://api.xero.com/connections', {
-        headers: {
-          'Authorization': `Bearer ${access_token}`
-        }
-      });
-
-      const connections = connectionsResponse.data;
-      
-      // Store session
-      const sessionId = crypto.randomBytes(16).toString('hex');
-      tokenStore[sessionId] = {
-        access_token,
-        refresh_token: xero_refresh_token,
-        expires_at: Date.now() + (expires_in * 1000),
-        connections,
-        created: Date.now()
-      };
-
-      console.log('✅ OAuth token exchange successful');
+      console.log('✅ Session found, returning tokens');
       
       // Return OAuth-compliant response
       res.json({
-        access_token: sessionId, // Use session ID as access token for our API
+        access_token: code, // Use session ID as access token for our API
         token_type: 'Bearer',
-        expires_in: expires_in,
-        refresh_token: sessionId, // Same session ID for refresh
+        expires_in: Math.floor((session.expires_at - Date.now()) / 1000),
+        refresh_token: code, // Same session ID for refresh
         scope: 'accounting.transactions accounting.contacts accounting.settings accounting.reports.read'
       });
       
     } else if (grant_type === 'refresh_token') {
       // Handle refresh token flow
+      console.log('🔄 Processing refresh token grant...');
+      
       const session = tokenStore[refresh_token];
       
       if (!session || !session.refresh_token) {
+        console.error('❌ Invalid refresh token');
         return res.status(400).json({ error: 'invalid_grant' });
       }
       
@@ -222,6 +247,7 @@ app.post('/oauth/token', async (req, res) => {
       });
       
     } else {
+      console.error('❌ Unsupported grant type:', grant_type);
       res.status(400).json({ error: 'unsupported_grant_type' });
     }
     
@@ -253,22 +279,95 @@ app.get('/oauth/callback', async (req, res) => {
   }
 
   const stateData = tokenStore[state];
-  const { original_params } = stateData;
+  const { original_params, is_chatgpt } = stateData;
   
-  // Clean up state
-  delete tokenStore[state];
-  
-  // Redirect back to ChatGPT with authorization code
-  if (original_params && original_params.redirect_uri) {
-    const redirectUrl = `${original_params.redirect_uri}?code=${code}&state=${original_params.original_state}`;
-    res.redirect(redirectUrl);
-  } else {
-    // Fallback: show success message
-    res.json({
-      success: true,
-      message: 'OAuth authorization completed',
-      code: code
+  try {
+    console.log('🔄 Exchanging code for tokens...');
+    
+    // Exchange authorization code for tokens using our Xero app credentials
+    const baseUrl = getBaseUrl(req);
+    const tokenResponse = await axios.post('https://identity.xero.com/connect/token', 
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: process.env.XERO_CLIENT_ID,
+        client_secret: process.env.XERO_CLIENT_SECRET,
+        code: code,
+        redirect_uri: `${baseUrl}/oauth/callback`
+      }), {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      }
+    );
+
+    const { access_token, refresh_token, expires_in } = tokenResponse.data;
+    console.log('✅ Tokens received successfully');
+
+    // Get tenant connections
+    console.log('🔄 Fetching tenant connections...');
+    const connectionsResponse = await axios.get('https://api.xero.com/connections', {
+      headers: {
+        'Authorization': `Bearer ${access_token}`
+      }
     });
+
+    const connections = connectionsResponse.data;
+    console.log(`✅ Found ${connections.length} connection(s)`);
+
+    // Store tokens
+    const sessionId = crypto.randomBytes(16).toString('hex');
+    tokenStore[sessionId] = {
+      access_token,
+      refresh_token,
+      expires_at: Date.now() + (expires_in * 1000),
+      connections,
+      created: Date.now(),
+      is_chatgpt: is_chatgpt
+    };
+
+    // Clean up state
+    delete tokenStore[state];
+
+    if (is_chatgpt && original_params && original_params.redirect_uri) {
+      // For ChatGPT, redirect back with the authorization code
+      console.log('🔗 Redirecting back to ChatGPT');
+      const redirectUrl = `${original_params.redirect_uri}?code=${sessionId}&state=${original_params.original_state}`;
+      res.redirect(redirectUrl);
+    } else {
+      // For legacy/direct access, show success page
+      res.json({
+        success: true,
+        message: 'Xero OAuth completed successfully!',
+        session_id: sessionId,
+        connections: connections.map(conn => ({
+          id: conn.id,
+          tenantId: conn.tenantId,
+          tenantName: conn.tenantName,
+          tenantType: conn.tenantType,
+          createdDateUtc: conn.createdDateUtc
+        })),
+        endpoints: {
+          contacts: `${baseUrl}/api/contacts?session=${sessionId}`,
+          invoices: `${baseUrl}/api/invoices?session=${sessionId}`,
+          accounts: `${baseUrl}/api/accounts?session=${sessionId}`,
+          reports: `${baseUrl}/api/reports?session=${sessionId}`
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ OAuth callback error:', error.response?.data || error.message);
+    
+    if (is_chatgpt && original_params && original_params.redirect_uri) {
+      // For ChatGPT, redirect back with error
+      const redirectUrl = `${original_params.redirect_uri}?error=server_error&error_description=${encodeURIComponent(error.message)}&state=${original_params.original_state}`;
+      res.redirect(redirectUrl);
+    } else {
+      res.status(500).json({ 
+        error: 'OAuth token exchange failed', 
+        details: error.response?.data || error.message 
+      });
+    }
   }
 });
 
@@ -284,10 +383,13 @@ app.get('/oauth/userinfo', async (req, res) => {
   const session = tokenStore[sessionId];
   
   if (!session) {
+    console.error('❌ Invalid session for userinfo');
     return res.status(401).json({ error: 'invalid_token' });
   }
   
   try {
+    console.log('🔄 Fetching user info...');
+    
     // Get user info from Xero
     const userResponse = await axios.get('https://api.xero.com/api.xro/2.0/Organisation', {
       headers: {
@@ -298,6 +400,8 @@ app.get('/oauth/userinfo', async (req, res) => {
     });
     
     const org = userResponse.data.Organisations?.[0];
+    
+    console.log('✅ User info retrieved');
     
     res.json({
       sub: session.connections[0]?.tenantId || 'unknown',
@@ -319,9 +423,10 @@ app.get('/health', (req, res) => {
     status: 'healthy', 
     service: 'xero-mcp-wrapper',
     timestamp: new Date().toISOString(),
-    version: '2.0.0',
+    version: '2.1.0',
     environment: process.env.NODE_ENV || 'development',
-    chatgpt_ready: true
+    chatgpt_ready: true,
+    chatgpt_client_configured: true
   });
 });
 
@@ -742,8 +847,9 @@ app.get('/api', (req, res) => {
   const baseUrl = getBaseUrl(req);
   res.json({
     service: 'Xero API Wrapper',
-    version: '2.0.0',
+    version: '2.1.0',
     chatgpt_compatible: true,
+    chatgpt_client_configured: true,
     oauth: {
       authorization_endpoint: `${baseUrl}/oauth/authorize`,
       token_endpoint: `${baseUrl}/oauth/token`,
@@ -782,7 +888,7 @@ app.get('/mcp', (req, res) => {
   const baseUrl = getBaseUrl(req);
   res.json({
     service: 'Xero MCP Wrapper (Legacy)',
-    version: '2.0.0',
+    version: '2.1.0',
     note: 'This is the legacy MCP interface. Use /api endpoints for ChatGPT integration.',
     authentication: {
       oauth_url: `${baseUrl}/`,
@@ -884,6 +990,7 @@ const startServer = () => {
     console.log(`🔑 Xero Client ID: ${process.env.XERO_CLIENT_ID ? 'SET' : 'MISSING'}`);
     console.log(`🔐 Xero Client Secret: ${process.env.XERO_CLIENT_SECRET ? 'SET' : 'MISSING'}`);
     console.log(`🤖 ChatGPT Ready: YES`);
+    console.log(`🎯 ChatGPT Client ID: ${CHATGPT_OAUTH.client_id}`);
   });
 };
 
@@ -899,3 +1006,4 @@ process.on('SIGINT', () => {
 });
 
 startServer();
+
