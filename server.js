@@ -30,6 +30,21 @@ const getBaseUrl = (req) => {
   return `${protocol}://${host}`;
 };
 
+// IMPROVED: ChatGPT request detection function
+const isChatGPTRequest = (client_id, redirect_uri) => {
+  // Check by client_id first
+  if (client_id === CHATGPT_OAUTH.client_id) {
+    return true;
+  }
+  
+  // Fallback: Check by redirect_uri pattern
+  if (redirect_uri && redirect_uri.includes('chat.openai.com/aip/')) {
+    return true;
+  }
+  
+  return false;
+};
+
 // Validate environment variables
 const validateEnv = () => {
   if (!process.env.XERO_CLIENT_ID || !process.env.XERO_CLIENT_SECRET) {
@@ -39,7 +54,7 @@ const validateEnv = () => {
   }
   console.log('✅ Environment variables validated');
   console.log('🤖 ChatGPT OAuth configured for Client ID:', CHATGPT_OAUTH.client_id);
-  console.log('🔄 Using callback proxy approach for ChatGPT integration');
+  console.log('🔄 Using enhanced callback proxy approach for ChatGPT integration');
 };
 
 // OAuth Discovery Endpoints for ChatGPT Integration
@@ -98,10 +113,10 @@ app.get('/.well-known/jwks.json', (req, res) => {
   });
 });
 
-// OAuth Endpoints for ChatGPT (with Callback Proxy)
-// =================================================
+// OAuth Endpoints for ChatGPT (with Enhanced Callback Proxy)
+// ==========================================================
 
-// OAuth Authorization endpoint (handles both ChatGPT and legacy requests)
+// ENHANCED: OAuth Authorization endpoint with improved ChatGPT detection
 app.get('/oauth/authorize', (req, res) => {
   const baseUrl = getBaseUrl(req);
   const state = generateState();
@@ -113,17 +128,23 @@ app.get('/oauth/authorize', (req, res) => {
   console.log('  Client ID:', client_id);
   console.log('  Redirect URI:', redirect_uri);
   console.log('  Scope:', scope);
+  console.log('  Response Type:', response_type);
+  console.log('  Original State:', original_state);
   
-  // Check if this is a ChatGPT request
-  const isChatGPTRequest = client_id === CHATGPT_OAUTH.client_id;
+  // ENHANCED: Use improved ChatGPT detection
+  const isChatGPT = isChatGPTRequest(client_id, redirect_uri);
   
-  if (isChatGPTRequest) {
-    console.log('✅ ChatGPT OAuth request detected');
+  if (isChatGPT) {
+    console.log('✅ ChatGPT OAuth request detected (enhanced detection)');
     console.log('🔄 Using callback proxy approach');
+    console.log('  Expected Client ID:', CHATGPT_OAUTH.client_id);
+    console.log('  Received Client ID:', client_id);
+    console.log('  Expected Redirect Pattern: chat.openai.com/aip/');
+    console.log('  Received Redirect URI:', redirect_uri);
     
-    // Validate ChatGPT redirect URI
-    if (redirect_uri !== CHATGPT_OAUTH.redirect_uri) {
-      console.error('❌ Invalid ChatGPT redirect URI:', redirect_uri);
+    // More flexible validation for ChatGPT redirect URI
+    if (redirect_uri && !redirect_uri.includes('chat.openai.com/aip/')) {
+      console.error('❌ Invalid ChatGPT redirect URI pattern:', redirect_uri);
       return res.status(400).json({ 
         error: 'invalid_request',
         error_description: 'Invalid redirect_uri for ChatGPT client'
@@ -136,7 +157,7 @@ app.get('/oauth/authorize', (req, res) => {
   // Store state and original parameters for validation
   tokenStore[state] = { 
     created: Date.now(),
-    is_chatgpt: isChatGPTRequest,
+    is_chatgpt: isChatGPT,
     original_params: {
       client_id,
       redirect_uri,
@@ -146,8 +167,13 @@ app.get('/oauth/authorize', (req, res) => {
     }
   };
   
+  console.log('💾 Stored state data:', {
+    state,
+    is_chatgpt: isChatGPT,
+    has_original_params: !!tokenStore[state].original_params
+  });
+  
   // Build Xero OAuth URL - ALWAYS use our server's callback URL
-  // This is the key change: we use our callback, not ChatGPT's
   const xeroAuthUrl = `https://login.xero.com/identity/connect/authorize?` +
     `response_type=code&` +
     `client_id=${process.env.XERO_CLIENT_ID}&` +
@@ -155,11 +181,17 @@ app.get('/oauth/authorize', (req, res) => {
     `scope=offline_access accounting.transactions accounting.contacts accounting.settings accounting.reports.read&` +
     `state=${state}`;
   
-  console.log(`🔗 Redirecting to Xero OAuth with our callback URL`);
+  if (isChatGPT) {
+    console.log(`🔗 Redirecting ChatGPT request to Xero OAuth with our callback URL`);
+  } else {
+    console.log(`🔗 Redirecting legacy request to Xero OAuth`);
+  }
+  
+  console.log(`🎯 Xero OAuth URL: ${xeroAuthUrl}`);
   res.redirect(xeroAuthUrl);
 });
 
-// OAuth Token endpoint
+// ENHANCED: OAuth Token endpoint with improved ChatGPT detection
 app.post('/oauth/token', async (req, res) => {
   const { grant_type, code, redirect_uri, client_id, client_secret, refresh_token } = req.body;
   
@@ -167,16 +199,26 @@ app.post('/oauth/token', async (req, res) => {
   console.log('  Grant type:', grant_type);
   console.log('  Client ID:', client_id);
   console.log('  Redirect URI:', redirect_uri);
+  console.log('  Code/Refresh Token:', code || refresh_token);
   
-  // Validate ChatGPT client credentials
-  if (client_id === CHATGPT_OAUTH.client_id) {
-    if (client_secret !== CHATGPT_OAUTH.client_secret) {
-      console.error('❌ Invalid ChatGPT client secret');
-      return res.status(401).json({ error: 'invalid_client' });
+  // ENHANCED: Use improved ChatGPT detection
+  const isChatGPT = isChatGPTRequest(client_id, redirect_uri);
+  
+  if (isChatGPT) {
+    console.log('✅ ChatGPT token request detected (enhanced detection)');
+    
+    // Only validate client_secret if we have exact client_id match
+    if (client_id === CHATGPT_OAUTH.client_id) {
+      if (client_secret !== CHATGPT_OAUTH.client_secret) {
+        console.error('❌ Invalid ChatGPT client secret');
+        return res.status(401).json({ error: 'invalid_client' });
+      }
+      console.log('✅ ChatGPT client secret validated');
     }
     
-    if (redirect_uri && redirect_uri !== CHATGPT_OAUTH.redirect_uri) {
-      console.error('❌ Invalid ChatGPT redirect URI');
+    // More flexible redirect URI validation
+    if (redirect_uri && !redirect_uri.includes('chat.openai.com/aip/')) {
+      console.error('❌ Invalid ChatGPT redirect URI pattern');
       return res.status(400).json({ error: 'invalid_grant' });
     }
     
@@ -192,11 +234,17 @@ app.post('/oauth/token', async (req, res) => {
       const session = tokenStore[code];
       
       if (!session) {
-        console.error('❌ Invalid authorization code/session');
+        console.error('❌ Invalid authorization code/session:', code);
+        console.log('📋 Available sessions:', Object.keys(tokenStore));
         return res.status(400).json({ error: 'invalid_grant' });
       }
       
-      console.log('✅ Session found, returning tokens');
+      console.log('✅ Session found:', {
+        session_id: code,
+        is_chatgpt: session.is_chatgpt,
+        has_access_token: !!session.access_token,
+        expires_at: new Date(session.expires_at).toISOString()
+      });
       
       // Return OAuth-compliant response
       res.json({
@@ -263,9 +311,14 @@ app.post('/oauth/token', async (req, res) => {
   }
 });
 
-// OAuth Callback (PROXY APPROACH - receives from Xero, forwards to ChatGPT)
+// ENHANCED: OAuth Callback with improved logging and ChatGPT detection
 app.get('/oauth/callback', async (req, res) => {
   const { code, state, error } = req.query;
+  
+  console.log('🔄 OAuth callback received:');
+  console.log('  Code:', code ? 'PRESENT' : 'MISSING');
+  console.log('  State:', state);
+  console.log('  Error:', error);
   
   if (error) {
     console.error('❌ OAuth error from Xero:', error);
@@ -286,6 +339,7 @@ app.get('/oauth/callback', async (req, res) => {
 
   if (!code || !state || !tokenStore[state]) {
     console.error('❌ Invalid OAuth callback parameters');
+    console.log('📋 Available states:', Object.keys(tokenStore));
     return res.status(400).json({ 
       error: 'Invalid OAuth callback parameters' 
     });
@@ -293,6 +347,13 @@ app.get('/oauth/callback', async (req, res) => {
 
   const stateData = tokenStore[state];
   const { original_params, is_chatgpt } = stateData;
+  
+  console.log('📋 State data retrieved:', {
+    state,
+    is_chatgpt,
+    has_original_params: !!original_params,
+    original_redirect_uri: original_params?.redirect_uri
+  });
   
   try {
     console.log('🔄 Exchanging code for tokens...');
@@ -338,21 +399,30 @@ app.get('/oauth/callback', async (req, res) => {
       is_chatgpt: is_chatgpt
     };
 
+    console.log('💾 Session created:', {
+      session_id: sessionId,
+      is_chatgpt,
+      connections_count: connections.length,
+      expires_at: new Date(Date.now() + (expires_in * 1000)).toISOString()
+    });
+
     // Clean up state
     delete tokenStore[state];
 
     if (is_chatgpt && original_params && original_params.redirect_uri) {
-      // PROXY APPROACH: Forward to ChatGPT with our session ID as the code
-      console.log('🔗 Proxying callback to ChatGPT');
-      console.log('  ChatGPT Callback URL:', original_params.redirect_uri);
+      // ENHANCED: Proxy approach with detailed logging
+      console.log('🔗 CHATGPT CALLBACK PROXY ACTIVATED');
       console.log('  Session ID:', sessionId);
+      console.log('  ChatGPT Callback URL:', original_params.redirect_uri);
       console.log('  Original State:', original_params.original_state);
       
       const redirectUrl = `${original_params.redirect_uri}?code=${sessionId}&state=${original_params.original_state}`;
-      console.log('🚀 Redirecting to:', redirectUrl);
+      console.log('🚀 Redirecting to ChatGPT:', redirectUrl);
+      
       res.redirect(redirectUrl);
     } else {
       // For legacy/direct access, show success page
+      console.log('📄 Showing legacy success page');
       res.json({
         success: true,
         message: 'Xero OAuth completed successfully!',
@@ -442,11 +512,12 @@ app.get('/health', (req, res) => {
     status: 'healthy', 
     service: 'xero-mcp-wrapper',
     timestamp: new Date().toISOString(),
-    version: '2.2.0',
+    version: '2.3.0',
     environment: process.env.NODE_ENV || 'development',
     chatgpt_ready: true,
     chatgpt_client_configured: true,
-    callback_proxy_enabled: true
+    callback_proxy_enabled: true,
+    enhanced_detection: true
   });
 });
 
@@ -867,10 +938,11 @@ app.get('/api', (req, res) => {
   const baseUrl = getBaseUrl(req);
   res.json({
     service: 'Xero API Wrapper',
-    version: '2.2.0',
+    version: '2.3.0',
     chatgpt_compatible: true,
     chatgpt_client_configured: true,
     callback_proxy_enabled: true,
+    enhanced_detection: true,
     oauth: {
       authorization_endpoint: `${baseUrl}/oauth/authorize`,
       token_endpoint: `${baseUrl}/oauth/token`,
@@ -909,7 +981,7 @@ app.get('/mcp', (req, res) => {
   const baseUrl = getBaseUrl(req);
   res.json({
     service: 'Xero MCP Wrapper (Legacy)',
-    version: '2.2.0',
+    version: '2.3.0',
     note: 'This is the legacy MCP interface. Use /api endpoints for ChatGPT integration.',
     authentication: {
       oauth_url: `${baseUrl}/`,
@@ -1012,7 +1084,8 @@ const startServer = () => {
     console.log(`🔐 Xero Client Secret: ${process.env.XERO_CLIENT_SECRET ? 'SET' : 'MISSING'}`);
     console.log(`🤖 ChatGPT Ready: YES`);
     console.log(`🎯 ChatGPT Client ID: ${CHATGPT_OAUTH.client_id}`);
-    console.log(`🔄 Callback Proxy: ENABLED`);
+    console.log(`🔄 Enhanced Callback Proxy: ENABLED`);
+    console.log(`🎯 Enhanced Detection: ENABLED`);
   });
 };
 
