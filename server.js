@@ -9,6 +9,9 @@ const port = process.env.PORT || 3000;
 // In-memory token storage (use Redis/database in production)
 let tokenStore = {};
 
+// In-memory page cache for Xero API responses
+let pageCache = {};
+
 // ChatGPT OAuth credentials
 const CHATGPT_OAUTH = {
   client_id: '2EAFE6AEB1764228B44A9ECAE105E19A',
@@ -55,8 +58,24 @@ const getDateDaysAgo = (days) => {
   return formatDateForXero(date);
 };
 
-// Build Xero API URL with filters
-const buildXeroUrl = (baseUrl, filters = {}) => {
+// Xero pagination utilities
+const XERO_PAGE_SIZE = 100; // Xero's fixed page size
+
+const calculateXeroPage = (offset) => {
+  return Math.floor(offset / XERO_PAGE_SIZE) + 1; // Xero pages start at 1
+};
+
+const calculatePageOffset = (offset) => {
+  return offset % XERO_PAGE_SIZE; // Offset within the page
+};
+
+const generateCacheKey = (baseUrl, filters, page) => {
+  const filterStr = JSON.stringify(filters);
+  return `${baseUrl}_${filterStr}_page${page}`;
+};
+
+// Build Xero API URL with filters and pagination
+const buildXeroUrl = (baseUrl, filters = {}, page = 1) => {
   const url = new URL(baseUrl);
   
   // Add where clause for filtering
@@ -95,6 +114,11 @@ const buildXeroUrl = (baseUrl, filters = {}) => {
   // Add order by
   if (filters.order_by) {
     url.searchParams.set('order', filters.order_by);
+  }
+  
+  // Add Xero page parameter
+  if (page > 1) {
+    url.searchParams.set('page', page.toString());
   }
   
   // Add modified since
@@ -166,8 +190,102 @@ const parseFilters = (query) => {
   return filters;
 };
 
-// Create optimized response format
-const createOptimizedResponse = (data, filters, totalCount = null, endpoint = '') => {
+// Fetch data from Xero with smart pagination and caching
+const fetchFromXeroWithPagination = async (baseUrl, filters, access_token, tenantId, headers = {}) => {
+  const startPage = calculateXeroPage(filters.offset);
+  const pageOffset = calculatePageOffset(filters.offset);
+  const endOffset = filters.offset + filters.limit;
+  const endPage = calculateXeroPage(endOffset - 1);
+  
+  console.log(`📄 Pagination calculation:`, {
+    offset: filters.offset,
+    limit: filters.limit,
+    startPage,
+    endPage,
+    pageOffset,
+    endOffset
+  });
+  
+  let allData = [];
+  let totalFetched = 0;
+  
+  // Fetch all required pages
+  for (let page = startPage; page <= endPage; page++) {
+    const cacheKey = generateCacheKey(baseUrl, filters, page);
+    let pageData;
+    
+    // Check cache first
+    if (pageCache[cacheKey] && (Date.now() - pageCache[cacheKey].timestamp) < 300000) { // 5 min cache
+      console.log(`💾 Using cached data for page ${page}`);
+      pageData = pageCache[cacheKey].data;
+    } else {
+      console.log(`🔄 Fetching page ${page} from Xero API`);
+      
+      const xeroUrl = buildXeroUrl(baseUrl, filters, page);
+      console.log(`🔗 Xero URL: ${xeroUrl}`);
+      
+      try {
+        const response = await axios.get(xeroUrl, {
+          headers: {
+            'Authorization': `Bearer ${access_token}`,
+            'Xero-tenant-id': tenantId,
+            'Accept': 'application/json',
+            ...headers
+          }
+        });
+        
+        // Extract data based on endpoint type
+        if (response.data.Invoices) {
+          pageData = response.data.Invoices;
+        } else if (response.data.Contacts) {
+          pageData = response.data.Contacts;
+        } else if (response.data.Accounts) {
+          pageData = response.data.Accounts;
+        } else {
+          pageData = response.data;
+        }
+        
+        // Cache the page
+        pageCache[cacheKey] = {
+          data: pageData,
+          timestamp: Date.now()
+        };
+        
+        console.log(`✅ Fetched ${pageData.length} records from page ${page}`);
+        
+      } catch (error) {
+        console.error(`❌ Error fetching page ${page}:`, error.response?.data || error.message);
+        throw error;
+      }
+    }
+    
+    allData = allData.concat(pageData);
+    totalFetched += pageData.length;
+    
+    // If we got less than a full page, we've reached the end
+    if (pageData.length < XERO_PAGE_SIZE) {
+      console.log(`📄 Reached end of data at page ${page} (${pageData.length} records)`);
+      break;
+    }
+  }
+  
+  // Apply client-side slicing to get exact range requested
+  const startIndex = pageOffset;
+  const endIndex = Math.min(startIndex + filters.limit, allData.length);
+  const slicedData = allData.slice(startIndex, endIndex);
+  
+  console.log(`✂️ Sliced data: ${startIndex}-${endIndex} from ${allData.length} total records`);
+  console.log(`📊 Returning ${slicedData.length} records`);
+  
+  return {
+    data: slicedData,
+    totalAvailable: allData.length,
+    hasMore: endIndex < allData.length || (allData.length === XERO_PAGE_SIZE * (endPage - startPage + 1))
+  };
+};
+
+// Create optimized response format with fixed pagination
+const createOptimizedResponse = (data, filters, totalCount = null, endpoint = '', hasMore = false) => {
   const response = {
     success: true,
     timestamp: new Date().toISOString(),
@@ -190,7 +308,7 @@ const createOptimizedResponse = (data, filters, totalCount = null, endpoint = ''
     limit: filters.limit,
     offset: filters.offset,
     returned_count: Array.isArray(data) ? data.length : 0,
-    has_more: Array.isArray(data) && data.length === filters.limit
+    has_more: hasMore
   };
   
   if (totalCount !== null) {
@@ -198,7 +316,7 @@ const createOptimizedResponse = (data, filters, totalCount = null, endpoint = ''
   }
   
   // Add next page URL if there's more data
-  if (response.pagination.has_more) {
+  if (hasMore) {
     const nextOffset = filters.offset + filters.limit;
     const queryParams = new URLSearchParams();
     queryParams.set('limit', filters.limit.toString());
@@ -225,7 +343,7 @@ const validateEnv = () => {
   }
   console.log('✅ Environment variables validated');
   console.log('🤖 ChatGPT OAuth configured for Client ID:', CHATGPT_OAUTH.client_id);
-  console.log('🔄 Using enhanced callback proxy with full optimization');
+  console.log('🔄 Using enhanced callback proxy with pagination fix');
 };
 
 // OAuth Discovery Endpoints for ChatGPT Integration
@@ -597,7 +715,7 @@ app.get('/health', (req, res) => {
     status: 'healthy', 
     service: 'xero-mcp-wrapper',
     timestamp: new Date().toISOString(),
-    version: '2.4.0',
+    version: '2.4.1',
     environment: process.env.NODE_ENV || 'development',
     chatgpt_ready: true,
     chatgpt_client_configured: true,
@@ -605,7 +723,9 @@ app.get('/health', (req, res) => {
     enhanced_detection: true,
     filtering_enabled: true,
     pagination_enabled: true,
-    optimization_level: 'full'
+    pagination_fix: 'xero_page_based',
+    optimization_level: 'full',
+    cache_enabled: true
   });
 });
 
@@ -675,10 +795,10 @@ const validateSession = async (req, res, next) => {
   next();
 };
 
-// OPTIMIZED API Endpoints with Full Filtering & Pagination
-// ========================================================
+// OPTIMIZED API Endpoints with Fixed Pagination
+// =============================================
 
-// Enhanced List contacts with comprehensive filtering
+// Enhanced List contacts with fixed pagination
 app.get('/api/contacts', validateSession, async (req, res) => {
   try {
     const { access_token, connections } = req.session;
@@ -694,48 +814,30 @@ app.get('/api/contacts', validateSession, async (req, res) => {
     console.log(`🔄 Fetching contacts for tenant: ${tenantId}`);
     console.log('📋 Applied filters:', filters);
     
-    // Build Xero API URL with filters
+    // Use new pagination system
     const baseXeroUrl = 'https://api.xero.com/api.xro/2.0/Contacts';
-    const xeroUrl = buildXeroUrl(baseXeroUrl, filters);
+    const result = await fetchFromXeroWithPagination(baseXeroUrl, filters, access_token, tenantId);
     
-    console.log('🔗 Xero API URL:', xeroUrl);
-    
-    const headers = {
-      'Authorization': `Bearer ${access_token}`,
-      'Xero-tenant-id': tenantId,
-      'Accept': 'application/json'
-    };
-    
-    // Add If-Modified-Since header if specified
-    if (filters.modified_since) {
-      headers['If-Modified-Since'] = new Date(filters.modified_since).toISOString();
-    }
-    
-    const response = await axios.get(xeroUrl, { headers });
-    
-    let contacts = response.data.Contacts || [];
+    let contacts = result.data;
     
     // Apply client-side filtering for parameters not supported by Xero API
     if (!filters.include_archived) {
       contacts = contacts.filter(contact => contact.ContactStatus !== 'ARCHIVED');
     }
     
-    // Apply pagination (client-side for now)
-    const totalCount = contacts.length;
-    const paginatedContacts = contacts.slice(filters.offset, filters.offset + filters.limit);
-    
-    console.log(`✅ Retrieved ${paginatedContacts.length} of ${totalCount} contacts`);
+    console.log(`✅ Retrieved ${contacts.length} contacts`);
     
     const optimizedResponse = createOptimizedResponse(
-      paginatedContacts, 
+      contacts, 
       filters, 
-      totalCount, 
-      '/api/contacts'
+      result.totalAvailable, 
+      '/api/contacts',
+      result.hasMore
     );
     
     // Add contact-specific metadata
     optimizedResponse.summary = {
-      total_contacts: totalCount,
+      total_contacts: result.totalAvailable,
       active_contacts: contacts.filter(c => c.ContactStatus === 'ACTIVE').length,
       archived_contacts: contacts.filter(c => c.ContactStatus === 'ARCHIVED').length
     };
@@ -751,7 +853,7 @@ app.get('/api/contacts', validateSession, async (req, res) => {
   }
 });
 
-// Enhanced List invoices with comprehensive filtering
+// Enhanced List invoices with fixed pagination
 app.get('/api/invoices', validateSession, async (req, res) => {
   try {
     const { access_token, connections } = req.session;
@@ -767,40 +869,25 @@ app.get('/api/invoices', validateSession, async (req, res) => {
     console.log(`🔄 Fetching invoices for tenant: ${tenantId}`);
     console.log('📋 Applied filters:', filters);
     
-    // Build Xero API URL with filters
+    // Use new pagination system
     const baseXeroUrl = 'https://api.xero.com/api.xro/2.0/Invoices';
-    const xeroUrl = buildXeroUrl(baseXeroUrl, {
+    const filtersWithOrder = {
       ...filters,
       order_by: filters.order_by || 'Date DESC' // Default to newest first
-    });
-    
-    console.log('🔗 Xero API URL:', xeroUrl);
-    
-    const headers = {
-      'Authorization': `Bearer ${access_token}`,
-      'Xero-tenant-id': tenantId,
-      'Accept': 'application/json'
     };
     
-    if (filters.modified_since) {
-      headers['If-Modified-Since'] = new Date(filters.modified_since).toISOString();
-    }
+    const result = await fetchFromXeroWithPagination(baseXeroUrl, filtersWithOrder, access_token, tenantId);
     
-    const response = await axios.get(xeroUrl, { headers });
+    const invoices = result.data;
     
-    let invoices = response.data.Invoices || [];
-    
-    // Apply pagination (client-side for now)
-    const totalCount = invoices.length;
-    const paginatedInvoices = invoices.slice(filters.offset, filters.offset + filters.limit);
-    
-    console.log(`✅ Retrieved ${paginatedInvoices.length} of ${totalCount} invoices`);
+    console.log(`✅ Retrieved ${invoices.length} invoices`);
     
     const optimizedResponse = createOptimizedResponse(
-      paginatedInvoices, 
+      invoices, 
       filters, 
-      totalCount, 
-      '/api/invoices'
+      result.totalAvailable, 
+      '/api/invoices',
+      result.hasMore
     );
     
     // Add invoice-specific metadata
@@ -813,7 +900,7 @@ app.get('/api/invoices', validateSession, async (req, res) => {
     const amountDue = invoices.reduce((sum, invoice) => sum + (invoice.AmountDue || 0), 0);
     
     optimizedResponse.summary = {
-      total_invoices: totalCount,
+      total_invoices: result.totalAvailable,
       status_breakdown: statusCounts,
       total_amount: totalAmount,
       amount_due: amountDue,
@@ -831,7 +918,7 @@ app.get('/api/invoices', validateSession, async (req, res) => {
   }
 });
 
-// Enhanced List accounts with filtering
+// Enhanced List accounts with fixed pagination
 app.get('/api/accounts', validateSession, async (req, res) => {
   try {
     const { access_token, connections } = req.session;
@@ -846,34 +933,20 @@ app.get('/api/accounts', validateSession, async (req, res) => {
     console.log(`🔄 Fetching accounts for tenant: ${tenantId}`);
     console.log('📋 Applied filters:', filters);
     
+    // Use new pagination system
     const baseXeroUrl = 'https://api.xero.com/api.xro/2.0/Accounts';
-    const xeroUrl = buildXeroUrl(baseXeroUrl, filters);
+    const result = await fetchFromXeroWithPagination(baseXeroUrl, filters, access_token, tenantId);
     
-    const headers = {
-      'Authorization': `Bearer ${access_token}`,
-      'Xero-tenant-id': tenantId,
-      'Accept': 'application/json'
-    };
+    const accounts = result.data;
     
-    if (filters.modified_since) {
-      headers['If-Modified-Since'] = new Date(filters.modified_since).toISOString();
-    }
-    
-    const response = await axios.get(xeroUrl, { headers });
-    
-    let accounts = response.data.Accounts || [];
-    
-    // Apply pagination
-    const totalCount = accounts.length;
-    const paginatedAccounts = accounts.slice(filters.offset, filters.offset + filters.limit);
-    
-    console.log(`✅ Retrieved ${paginatedAccounts.length} of ${totalCount} accounts`);
+    console.log(`✅ Retrieved ${accounts.length} accounts`);
     
     const optimizedResponse = createOptimizedResponse(
-      paginatedAccounts, 
+      accounts, 
       filters, 
-      totalCount, 
-      '/api/accounts'
+      result.totalAvailable, 
+      '/api/accounts',
+      result.hasMore
     );
     
     // Add account-specific metadata
@@ -883,7 +956,7 @@ app.get('/api/accounts', validateSession, async (req, res) => {
     });
     
     optimizedResponse.summary = {
-      total_accounts: totalCount,
+      total_accounts: result.totalAvailable,
       type_breakdown: typeCounts,
       active_accounts: accounts.filter(a => a.Status === 'ACTIVE').length,
       archived_accounts: accounts.filter(a => a.Status === 'ARCHIVED').length
@@ -1036,7 +1109,7 @@ app.get('/api/reports/:reportType', validateSession, async (req, res) => {
   }
 });
 
-// New: Quick filters endpoint for common bookkeeping queries
+// Enhanced Quick filters endpoint for common bookkeeping queries
 app.get('/api/quick/:filter', validateSession, async (req, res) => {
   try {
     const { filter } = req.params;
@@ -1049,32 +1122,38 @@ app.get('/api/quick/:filter', validateSession, async (req, res) => {
 
     console.log(`🔄 Processing quick filter: ${filter}`);
     
-    let apiCall;
+    let filters;
+    let endpoint;
     let description;
     
     switch (filter) {
       case 'recent-invoices':
-        apiCall = `/api/invoices?days_ago=7&limit=10&order_by=Date DESC`;
+        filters = parseFilters({ days_ago: 7, limit: 10, order_by: 'Date DESC' });
+        endpoint = 'https://api.xero.com/api.xro/2.0/Invoices';
         description = 'Recent invoices from the last 7 days';
         break;
         
       case 'open-invoices':
-        apiCall = `/api/invoices?status=AUTHORISED&limit=20&order_by=Date DESC`;
+        filters = parseFilters({ status: 'AUTHORISED', limit: 20, order_by: 'Date DESC' });
+        endpoint = 'https://api.xero.com/api.xro/2.0/Invoices';
         description = 'Open (unpaid) invoices';
         break;
         
       case 'overdue-invoices':
-        apiCall = `/api/invoices?status=AUTHORISED&date_to=${getDateDaysAgo(0)}&limit=20&order_by=Date ASC`;
+        filters = parseFilters({ status: 'AUTHORISED', date_to: getDateDaysAgo(0), limit: 20, order_by: 'Date ASC' });
+        endpoint = 'https://api.xero.com/api.xro/2.0/Invoices';
         description = 'Overdue invoices';
         break;
         
       case 'recent-contacts':
-        apiCall = `/api/contacts?days_ago=30&limit=20`;
+        filters = parseFilters({ days_ago: 30, limit: 20 });
+        endpoint = 'https://api.xero.com/api.xro/2.0/Contacts';
         description = 'Recently added or modified contacts';
         break;
         
       case 'active-contacts':
-        apiCall = `/api/contacts?include_archived=false&limit=50`;
+        filters = parseFilters({ include_archived: false, limit: 50 });
+        endpoint = 'https://api.xero.com/api.xro/2.0/Contacts';
         description = 'Active contacts only';
         break;
         
@@ -1091,25 +1170,29 @@ app.get('/api/quick/:filter', validateSession, async (req, res) => {
         });
     }
     
-    // Forward the request to the appropriate API endpoint
-    const fullUrl = `${req.protocol}://${req.get('host')}${apiCall}&tenant=${tenantId}`;
-    console.log('🔗 Forwarding to:', fullUrl);
+    // Fetch data using the new pagination system
+    const result = await fetchFromXeroWithPagination(endpoint, filters, access_token, tenantId);
     
-    // Make internal API call
-    const internalReq = {
-      ...req,
-      url: apiCall,
-      query: { ...req.query, tenant: tenantId }
-    };
+    let data = result.data;
     
-    // This is a simplified approach - in production, you'd want to properly forward the request
-    res.json({
-      success: true,
-      filter: filter,
-      description: description,
-      redirect_to: apiCall,
-      note: 'Use the redirect_to URL for the actual data'
-    });
+    // Apply additional filtering for contacts
+    if (filter === 'active-contacts') {
+      data = data.filter(contact => contact.ContactStatus !== 'ARCHIVED');
+    }
+    
+    console.log(`✅ Quick filter ${filter} returned ${data.length} records`);
+    
+    const optimizedResponse = createOptimizedResponse(
+      data, 
+      filters, 
+      result.totalAvailable, 
+      `/api/quick/${filter}`,
+      result.hasMore
+    );
+    
+    optimizedResponse.filter_description = description;
+    
+    res.json(optimizedResponse);
 
   } catch (error) {
     console.error('❌ Quick filter error:', error.response?.data || error.message);
@@ -1245,14 +1328,17 @@ app.get('/api', (req, res) => {
   const baseUrl = getBaseUrl(req);
   res.json({
     service: 'Xero API Wrapper',
-    version: '2.4.0',
+    version: '2.4.1',
     chatgpt_compatible: true,
     optimization_level: 'full',
+    pagination_fix: 'xero_page_based',
     features: {
       filtering: true,
       pagination: true,
+      pagination_fix: true,
       quick_filters: true,
-      enhanced_responses: true
+      enhanced_responses: true,
+      smart_caching: true
     },
     oauth: {
       authorization_endpoint: `${baseUrl}/oauth/authorize`,
@@ -1305,6 +1391,13 @@ app.get('/api', (req, res) => {
         ]
       }
     },
+    pagination: {
+      note: 'Fixed to work with Xero\'s page-based pagination system',
+      xero_page_size: XERO_PAGE_SIZE,
+      client_side_slicing: true,
+      smart_caching: true,
+      supports_offset_limit: true
+    },
     authentication: {
       type: 'OAuth 2.0',
       flow: 'authorization_code',
@@ -1320,12 +1413,13 @@ app.get('/api', (req, res) => {
       oauth_flow: `${baseUrl}/oauth/authorize?client_id=YOUR_CLIENT_ID&redirect_uri=YOUR_REDIRECT&response_type=code&scope=accounting.contacts`,
       recent_invoices: `${baseUrl}/api/invoices?days_ago=7&limit=10`,
       open_invoices: `${baseUrl}/api/invoices?status=AUTHORISED&limit=20`,
+      next_page: `${baseUrl}/api/invoices?limit=20&offset=20`,
       active_contacts: `${baseUrl}/api/contacts?include_archived=false&limit=50`,
       quick_open_invoices: `${baseUrl}/api/quick/open-invoices`
     },
     response_format: {
       success: true,
-      timestamp: '2025-09-16T11:00:00.000Z',
+      timestamp: '2025-09-16T12:00:00.000Z',
       endpoint: '/api/invoices',
       filters_applied: {
         status: 'AUTHORISED',
@@ -1400,17 +1494,28 @@ app.use((req, res) => {
   });
 });
 
-// Cleanup old sessions (run every hour)
+// Cleanup old sessions and cache (run every hour)
 setInterval(() => {
   const now = Date.now();
   const oneHour = 60 * 60 * 1000;
   
+  // Clean up old sessions
   Object.keys(tokenStore).forEach(key => {
     const session = tokenStore[key];
     if (session.created && (now - session.created) > oneHour) {
       delete tokenStore[key];
     }
   });
+  
+  // Clean up old cache entries
+  Object.keys(pageCache).forEach(key => {
+    const entry = pageCache[key];
+    if (entry.timestamp && (now - entry.timestamp) > oneHour) {
+      delete pageCache[key];
+    }
+  });
+  
+  console.log(`🧹 Cleanup completed: ${Object.keys(tokenStore).length} sessions, ${Object.keys(pageCache).length} cache entries`);
 }, 60 * 60 * 1000);
 
 // Start server
@@ -1418,7 +1523,7 @@ const startServer = () => {
   validateEnv();
   
   app.listen(port, '0.0.0.0', () => {
-    console.log(`🚀 Xero API Wrapper v2.4.0 running on 0.0.0.0:${port}`);
+    console.log(`🚀 Xero API Wrapper v2.4.1 running on 0.0.0.0:${port}`);
     console.log(`🔗 OAuth URL: http://localhost:${port}/oauth/authorize`);
     console.log(`🏥 Health check: http://localhost:${port}/health`);
     console.log(`📚 API docs: http://localhost:${port}/api`);
@@ -1431,6 +1536,8 @@ const startServer = () => {
     console.log(`🔄 Enhanced Callback Proxy: ENABLED`);
     console.log(`🎯 Enhanced Detection: ENABLED`);
     console.log(`🔍 Full Filtering & Pagination: ENABLED`);
+    console.log(`📄 Xero Page-Based Pagination: FIXED`);
+    console.log(`💾 Smart Caching: ENABLED`);
     console.log(`⚡ Optimization Level: FULL`);
   });
 };
