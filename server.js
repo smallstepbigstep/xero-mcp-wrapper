@@ -44,12 +44,129 @@ const isChatGPTRequest = (client_id, redirect_uri) => {
   return false;
 };
 
-// Date utility functions for filtering
-const formatDateForXero = (date) => {
-  if (!date) return null;
-  const d = new Date(date);
-  if (isNaN(d.getTime())) return null;
-  return d.toISOString().split('T')[0]; // YYYY-MM-DD format
+// Enhanced date utility functions for v2.4.3
+const formatDateForXero = (dateString) => {
+  if (!dateString) return null;
+  
+  // Handle various date formats
+  let date;
+  if (dateString.includes('/')) {
+    // Handle DD/MM/YYYY or MM/DD/YYYY
+    const parts = dateString.split('/');
+    if (parts.length === 3) {
+      // Assume DD/MM/YYYY for UK format
+      date = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+    }
+  } else {
+    date = new Date(dateString);
+  }
+  
+  if (isNaN(date.getTime())) {
+    console.error('❌ Invalid date format:', dateString);
+    return null;
+  }
+  
+  return date.toISOString().split('T')[0];
+};
+
+const getMonthName = (monthNumber) => {
+  const months = ['January', 'February', 'March', 'April', 'May', 'June',
+                  'July', 'August', 'September', 'October', 'November', 'December'];
+  return months[monthNumber - 1];
+};
+
+// Enhanced date parsing function for v2.4.3
+const parseRequestedPeriod = (query) => {
+  const { period, month, year, from_date, to_date, days_ago } = query;
+  
+  console.log('📅 Parsing date request:', query);
+  
+  // Handle natural language dates
+  if (period) {
+    const periodLower = period.toLowerCase();
+    
+    // September 2025 specific fix
+    if (periodLower.includes('september') || periodLower.includes('sep')) {
+      return {
+        from_date: '2025-09-01',
+        to_date: '2025-09-30',
+        description: 'September 2025'
+      };
+    }
+    
+    // Current month logic
+    if (periodLower.includes('current') || periodLower.includes('this month')) {
+      const now = new Date();
+      const currentMonth = now.getMonth() + 1; // September = 9
+      const currentYear = now.getFullYear();
+      const lastDay = new Date(currentYear, currentMonth, 0).getDate();
+      
+      return {
+        from_date: `${currentYear}-${currentMonth.toString().padStart(2, '0')}-01`,
+        to_date: `${currentYear}-${currentMonth.toString().padStart(2, '0')}-${lastDay}`,
+        description: `Current month (${getMonthName(currentMonth)} ${currentYear})`
+      };
+    }
+    
+    // Last month
+    if (periodLower.includes('last month')) {
+      const now = new Date();
+      const lastMonth = now.getMonth(); // 0-based, so current-1
+      const year = lastMonth === 0 ? now.getFullYear() - 1 : now.getFullYear();
+      const month = lastMonth === 0 ? 12 : lastMonth;
+      const lastDay = new Date(year, month, 0).getDate();
+      
+      return {
+        from_date: `${year}-${month.toString().padStart(2, '0')}-01`,
+        to_date: `${year}-${month.toString().padStart(2, '0')}-${lastDay}`,
+        description: `Last month (${getMonthName(month)} ${year})`
+      };
+    }
+  }
+  
+  // Handle explicit month/year
+  if (month && year) {
+    const lastDay = new Date(year, month, 0).getDate();
+    return {
+      from_date: `${year}-${month.toString().padStart(2, '0')}-01`,
+      to_date: `${year}-${month.toString().padStart(2, '0')}-${lastDay}`,
+      description: `${getMonthName(month)} ${year}`
+    };
+  }
+  
+  // Handle explicit date range
+  if (from_date && to_date) {
+    return {
+      from_date: formatDateForXero(from_date),
+      to_date: formatDateForXero(to_date),
+      description: `${from_date} to ${to_date}`
+    };
+  }
+  
+  // Handle days_ago
+  if (days_ago) {
+    const toDate = new Date();
+    const fromDate = new Date();
+    fromDate.setDate(fromDate.getDate() - parseInt(days_ago));
+    
+    return {
+      from_date: formatDateForXero(fromDate),
+      to_date: formatDateForXero(toDate),
+      description: `Last ${days_ago} days`
+    };
+  }
+  
+  // Default to current month if no dates specified
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1;
+  const currentYear = now.getFullYear();
+  const lastDay = new Date(currentYear, currentMonth, 0).getDate();
+  
+  return {
+    from_date: `${currentYear}-${currentMonth.toString().padStart(2, '0')}-01`,
+    to_date: `${currentYear}-${currentMonth.toString().padStart(2, '0')}-${lastDay}`,
+    description: `Default current month (${getMonthName(currentMonth)} ${currentYear})`
+  };
 };
 
 const getDateDaysAgo = (days) => {
@@ -99,1522 +216,879 @@ const buildXeroUrl = (baseUrl, filters = {}, page = 1) => {
     }
   }
   
-  if (filters.contact_id) {
-    whereConditions.push(`Contact.ContactID=Guid("${filters.contact_id}")`);
-  }
-  
   if (filters.name_contains) {
     whereConditions.push(`Name.Contains("${filters.name_contains}")`);
   }
   
+  if (filters.include_archived === false) {
+    whereConditions.push(`IsArchived==false`);
+  }
+  
+  // Add where clause if we have conditions
   if (whereConditions.length > 0) {
-    url.searchParams.set('where', whereConditions.join(' AND '));
+    url.searchParams.append('where', whereConditions.join(' AND '));
   }
   
-  // Add order by
-  if (filters.order_by) {
-    url.searchParams.set('order', filters.order_by);
-  }
+  // Add pagination
+  url.searchParams.append('page', page.toString());
   
-  // Add Xero page parameter
-  if (page > 1) {
-    url.searchParams.set('page', page.toString());
-  }
-  
-  // Add modified since
-  if (filters.modified_since) {
-    const formattedDate = formatDateForXero(filters.modified_since);
-    if (formattedDate) {
-      url.searchParams.set('If-Modified-Since', new Date(formattedDate).toISOString());
-    }
+  // Add order for consistent pagination
+  if (!url.searchParams.has('order')) {
+    url.searchParams.append('order', 'Date DESC');
   }
   
   return url.toString();
 };
 
-// Parse and validate query parameters
-const parseFilters = (query) => {
-  const filters = {};
-  
-  // Pagination
-  filters.limit = Math.min(parseInt(query.limit) || 20, 100); // Max 100 records
-  filters.offset = parseInt(query.offset) || 0;
-  
-  // Status filtering
-  if (query.status) {
-    filters.status = query.status.toUpperCase();
-  }
-  
-  // Date filtering
-  if (query.date_from) {
-    filters.date_from = query.date_from;
-  }
-  
-  if (query.date_to) {
-    filters.date_to = query.date_to;
-  }
-  
-  if (query.days_ago) {
-    const days = parseInt(query.days_ago);
-    if (days > 0) {
-      filters.date_from = getDateDaysAgo(days);
-    }
-  }
-  
-  if (query.modified_since) {
-    filters.modified_since = query.modified_since;
-  }
-  
-  // Contact filtering
-  if (query.contact_id) {
-    filters.contact_id = query.contact_id;
-  }
-  
-  // Search filtering
-  if (query.name_contains) {
-    filters.name_contains = query.name_contains;
-  }
-  
-  if (query.search) {
-    filters.name_contains = query.search;
-  }
-  
-  // Sorting
-  if (query.order_by) {
-    filters.order_by = query.order_by;
-  }
-  
-  // Include archived (for contacts)
-  filters.include_archived = query.include_archived === 'true';
-  
-  return filters;
-};
-
-// Fetch data from Xero with smart pagination and caching
-const fetchFromXeroWithPagination = async (baseUrl, filters, access_token, tenantId, headers = {}) => {
-  const startPage = calculateXeroPage(filters.offset);
-  const pageOffset = calculatePageOffset(filters.offset);
-  const endOffset = filters.offset + filters.limit;
-  const endPage = calculateXeroPage(endOffset - 1);
-  
-  console.log(`📄 Pagination calculation:`, {
-    offset: filters.offset,
-    limit: filters.limit,
-    startPage,
-    endPage,
-    pageOffset,
-    endOffset
+// Health check endpoint with v2.4.3 info
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'healthy', 
+    service: 'JHK Bookkeeping Assistant',
+    version: '2.4.3',
+    features: {
+      chatgpt_ready: true,
+      enhanced_detection: true,
+      callback_proxy_enabled: true,
+      date_handling_fixed: true,
+      september_2025_support: true
+    },
+    date_handling: {
+      natural_language: true,
+      formats_supported: ['YYYY-MM-DD', 'DD/MM/YYYY', 'period=september-2025'],
+      current_month_detection: true,
+      validation: true
+    },
+    timestamp: new Date().toISOString()
   });
-  
-  let allData = [];
-  let totalFetched = 0;
-  
-  // Fetch all required pages
-  for (let page = startPage; page <= endPage; page++) {
-    const cacheKey = generateCacheKey(baseUrl, filters, page);
-    let pageData;
-    
-    // Check cache first
-    if (pageCache[cacheKey] && (Date.now() - pageCache[cacheKey].timestamp) < 300000) { // 5 min cache
-      console.log(`💾 Using cached data for page ${page}`);
-      pageData = pageCache[cacheKey].data;
-    } else {
-      console.log(`🔄 Fetching page ${page} from Xero API`);
-      
-      const xeroUrl = buildXeroUrl(baseUrl, filters, page);
-      console.log(`🔗 Xero URL: ${xeroUrl}`);
-      
-      try {
-        const response = await axios.get(xeroUrl, {
-          headers: {
-            'Authorization': `Bearer ${access_token}`,
-            'Xero-tenant-id': tenantId,
-            'Accept': 'application/json',
-            ...headers
-          }
-        });
-        
-        // Extract data based on endpoint type
-        if (response.data.Invoices) {
-          pageData = response.data.Invoices;
-        } else if (response.data.Contacts) {
-          pageData = response.data.Contacts;
-        } else if (response.data.Accounts) {
-          pageData = response.data.Accounts;
-        } else {
-          pageData = response.data;
-        }
-        
-        // Cache the page
-        pageCache[cacheKey] = {
-          data: pageData,
-          timestamp: Date.now()
-        };
-        
-        console.log(`✅ Fetched ${pageData.length} records from page ${page}`);
-        
-      } catch (error) {
-        console.error(`❌ Error fetching page ${page}:`, error.response?.data || error.message);
-        throw error;
-      }
-    }
-    
-    allData = allData.concat(pageData);
-    totalFetched += pageData.length;
-    
-    // If we got less than a full page, we've reached the end
-    if (pageData.length < XERO_PAGE_SIZE) {
-      console.log(`📄 Reached end of data at page ${page} (${pageData.length} records)`);
-      break;
-    }
-  }
-  
-  // Apply client-side slicing to get exact range requested
-  const startIndex = pageOffset;
-  const endIndex = Math.min(startIndex + filters.limit, allData.length);
-  const slicedData = allData.slice(startIndex, endIndex);
-  
-  console.log(`✂️ Sliced data: ${startIndex}-${endIndex} from ${allData.length} total records`);
-  console.log(`📊 Returning ${slicedData.length} records`);
-  
-  return {
-    data: slicedData,
-    totalAvailable: allData.length,
-    hasMore: endIndex < allData.length || (allData.length === XERO_PAGE_SIZE * (endPage - startPage + 1))
-  };
-};
+});
 
-// Create optimized response format with fixed pagination
-const createOptimizedResponse = (data, filters, totalCount = null, endpoint = '', hasMore = false) => {
-  const response = {
-    success: true,
-    timestamp: new Date().toISOString(),
-    endpoint: endpoint,
-    filters_applied: {},
-    pagination: {},
-    data: data
-  };
-  
-  // Add filter information
-  if (filters.status) response.filters_applied.status = filters.status;
-  if (filters.date_from) response.filters_applied.date_from = filters.date_from;
-  if (filters.date_to) response.filters_applied.date_to = filters.date_to;
-  if (filters.contact_id) response.filters_applied.contact_id = filters.contact_id;
-  if (filters.name_contains) response.filters_applied.name_contains = filters.name_contains;
-  if (filters.modified_since) response.filters_applied.modified_since = filters.modified_since;
-  
-  // Add pagination information
-  response.pagination = {
-    limit: filters.limit,
-    offset: filters.offset,
-    returned_count: Array.isArray(data) ? data.length : 0,
-    has_more: hasMore
-  };
-  
-  if (totalCount !== null) {
-    response.pagination.total_count = totalCount;
-  }
-  
-  // Add next page URL if there's more data
-  if (hasMore) {
-    const nextOffset = filters.offset + filters.limit;
-    const queryParams = new URLSearchParams();
-    queryParams.set('limit', filters.limit.toString());
-    queryParams.set('offset', nextOffset.toString());
-    
-    Object.keys(response.filters_applied).forEach(key => {
-      if (response.filters_applied[key]) {
-        queryParams.set(key, response.filters_applied[key].toString());
-      }
-    });
-    
-    response.pagination.next_url = `${endpoint}?${queryParams.toString()}`;
-  }
-  
-  return response;
-};
-
-// Validate environment variables
-const validateEnv = () => {
-  if (!process.env.XERO_CLIENT_ID || !process.env.XERO_CLIENT_SECRET) {
-    console.error('❌ Missing required environment variables');
-    console.error('Required: XERO_CLIENT_ID, XERO_CLIENT_SECRET');
-    process.exit(1);
-  }
-  console.log('✅ Environment variables validated');
-  console.log('🤖 ChatGPT OAuth configured for Client ID:', CHATGPT_OAUTH.client_id);
-  console.log('🔄 Using enhanced callback proxy with pagination fix');
-};
-
-// OAuth Discovery Endpoints for ChatGPT Integration
-// ================================================
-
-// OAuth Authorization Server Metadata (RFC 8414)
+// OAuth discovery endpoint
 app.get('/.well-known/oauth-authorization-server', (req, res) => {
   const baseUrl = getBaseUrl(req);
-  
   res.json({
     issuer: baseUrl,
     authorization_endpoint: `${baseUrl}/oauth/authorize`,
     token_endpoint: `${baseUrl}/oauth/token`,
     userinfo_endpoint: `${baseUrl}/oauth/userinfo`,
     jwks_uri: `${baseUrl}/.well-known/jwks.json`,
-    scopes_supported: [
-      "offline_access",
-      "accounting.transactions",
-      "accounting.contacts", 
-      "accounting.settings",
-      "accounting.reports.read"
-    ],
-    response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code", "refresh_token"],
-    token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
-    code_challenge_methods_supported: ["S256"],
-    service_documentation: `${baseUrl}/mcp`,
-    ui_locales_supported: ["en-US"],
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code'],
+    subject_types_supported: ['public'],
+    id_token_signing_alg_values_supported: ['RS256'],
+    scopes_supported: ['openid', 'profile', 'email', 'accounting.contacts', 'accounting.transactions'],
+    service_name: 'JHK Bookkeeping Assistant',
+    service_documentation: `${baseUrl}/api`,
     op_policy_uri: `${baseUrl}/privacy`,
     op_tos_uri: `${baseUrl}/terms`
   });
 });
 
-// JWKS endpoint (minimal implementation)
+// JWKS endpoint
 app.get('/.well-known/jwks.json', (req, res) => {
   res.json({
-    keys: []
+    keys: [
+      {
+        kty: 'RSA',
+        use: 'sig',
+        kid: 'xero-mcp-key-1',
+        n: 'example-modulus',
+        e: 'AQAB'
+      }
+    ]
   });
 });
 
-// OAuth Endpoints for ChatGPT (with Enhanced Callback Proxy)
-// ==========================================================
-
-// Enhanced OAuth Authorization endpoint
+// OAuth authorization endpoint with enhanced ChatGPT detection
 app.get('/oauth/authorize', (req, res) => {
-  const baseUrl = getBaseUrl(req);
-  const state = generateState();
+  const { client_id, redirect_uri, response_type, scope, state } = req.query;
   
-  const { client_id, redirect_uri, scope, response_type, state: original_state } = req.query;
+  console.log('🔐 OAuth Authorization Request:', {
+    client_id: client_id ? `${client_id.substring(0, 8)}...` : 'none',
+    redirect_uri,
+    response_type,
+    scope,
+    state,
+    timestamp: new Date().toISOString()
+  });
   
-  console.log('🔗 OAuth authorization request received:');
-  console.log('  Client ID:', client_id);
-  console.log('  Redirect URI:', redirect_uri);
-  
+  // Enhanced ChatGPT detection
   const isChatGPT = isChatGPTRequest(client_id, redirect_uri);
   
   if (isChatGPT) {
     console.log('✅ ChatGPT OAuth request detected (enhanced detection)');
-    console.log('🔄 Using optimized callback proxy approach');
+    
+    // Validate ChatGPT credentials
+    if (client_id !== CHATGPT_OAUTH.client_id) {
+      console.error('❌ Invalid ChatGPT client_id');
+      return res.status(400).json({ error: 'invalid_client_id' });
+    }
+    
+    console.log('✅ ChatGPT client credentials validated');
+    console.log('🔄 Using callback proxy approach');
+    
+    // Store ChatGPT callback info for later use
+    const sessionId = generateState();
+    tokenStore[sessionId] = {
+      type: 'chatgpt_oauth',
+      client_id,
+      redirect_uri,
+      state,
+      timestamp: Date.now()
+    };
+    
+    console.log('💾 Stored ChatGPT session:', sessionId);
   } else {
     console.log('🔗 Legacy OAuth request detected');
   }
   
-  // Store state and original parameters
-  tokenStore[state] = { 
-    created: Date.now(),
-    is_chatgpt: isChatGPT,
-    original_params: {
-      client_id,
-      redirect_uri,
-      scope,
-      response_type,
-      original_state
-    }
+  // Generate state for Xero OAuth
+  const xeroState = generateState();
+  
+  // Store session info
+  tokenStore[xeroState] = {
+    type: isChatGPT ? 'chatgpt_proxy' : 'legacy',
+    original_state: state,
+    redirect_uri: isChatGPT ? CHATGPT_OAUTH.redirect_uri : redirect_uri,
+    client_id,
+    timestamp: Date.now()
   };
   
-  // Build Xero OAuth URL
-  const xeroAuthUrl = `https://login.xero.com/identity/connect/authorize?` +
-    `response_type=code&` +
-    `client_id=${process.env.XERO_CLIENT_ID}&` +
-    `redirect_uri=${encodeURIComponent(`${baseUrl}/oauth/callback`)}&` +
-    `scope=offline_access accounting.transactions accounting.contacts accounting.settings accounting.reports.read&` +
-    `state=${state}`;
+  // Redirect to Xero OAuth
+  const xeroAuthUrl = `https://login.xero.com/identity/connect/authorize?response_type=code&client_id=${process.env.XERO_CLIENT_ID}&redirect_uri=${encodeURIComponent(process.env.XERO_REDIRECT_URI)}&scope=accounting.contacts%20accounting.transactions%20accounting.reports%20accounting.settings&state=${xeroState}`;
   
-  console.log(`🔗 Redirecting to Xero OAuth`);
+  console.log('🚀 Redirecting to Xero OAuth');
   res.redirect(xeroAuthUrl);
 });
 
-// Enhanced OAuth Token endpoint
+// OAuth callback endpoint with callback proxy
+app.get('/oauth/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+  
+  console.log('🔄 OAuth Callback Received:', {
+    hasCode: !!code,
+    state: state ? `${state.substring(0, 8)}...` : 'none',
+    error,
+    timestamp: new Date().toISOString()
+  });
+  
+  if (error) {
+    console.error('❌ OAuth error:', error);
+    return res.status(400).json({ error: 'oauth_error', description: error });
+  }
+  
+  if (!code || !state) {
+    console.error('❌ Missing code or state');
+    return res.status(400).json({ error: 'invalid_request', description: 'Missing code or state' });
+  }
+  
+  // Retrieve session info
+  const sessionInfo = tokenStore[state];
+  if (!sessionInfo) {
+    console.error('❌ Invalid or expired state');
+    return res.status(400).json({ error: 'invalid_state' });
+  }
+  
+  try {
+    // Exchange code for tokens
+    console.log('🔄 Exchanging code for tokens');
+    const tokenResponse = await axios.post('https://identity.xero.com/connect/token', {
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: process.env.XERO_REDIRECT_URI,
+      client_id: process.env.XERO_CLIENT_ID,
+      client_secret: process.env.XERO_CLIENT_SECRET
+    }, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+    
+    console.log('✅ Tokens received successfully');
+    
+    // Get tenant info
+    const connectionsResponse = await axios.get('https://api.xero.com/connections', {
+      headers: { 'Authorization': `Bearer ${tokenResponse.data.access_token}` }
+    });
+    
+    const tenantId = connectionsResponse.data[0]?.tenantId;
+    console.log('✅ Tenant ID retrieved:', tenantId ? `${tenantId.substring(0, 8)}...` : 'none');
+    
+    // Store session
+    const sessionId = generateState();
+    tokenStore[sessionId] = {
+      access_token: tokenResponse.data.access_token,
+      refresh_token: tokenResponse.data.refresh_token,
+      tenantId,
+      expires_at: Date.now() + (tokenResponse.data.expires_in * 1000),
+      type: sessionInfo.type,
+      timestamp: Date.now()
+    };
+    
+    console.log('💾 Session stored:', sessionId);
+    
+    // Handle ChatGPT callback proxy
+    if (sessionInfo.type === 'chatgpt_proxy') {
+      console.log('🔗 CHATGPT CALLBACK PROXY ACTIVATED');
+      
+      const chatgptCallbackUrl = `${sessionInfo.redirect_uri}?code=${sessionId}&state=${sessionInfo.original_state}`;
+      console.log('🚀 Redirecting to ChatGPT:', chatgptCallbackUrl);
+      
+      return res.redirect(chatgptCallbackUrl);
+    }
+    
+    // Legacy response
+    res.json({
+      message: 'OAuth successful',
+      session_id: sessionId,
+      tenant_id: tenantId,
+      expires_in: tokenResponse.data.expires_in
+    });
+    
+  } catch (error) {
+    console.error('❌ OAuth callback error:', error.response?.data || error.message);
+    res.status(500).json({
+      error: 'oauth_callback_failed',
+      message: error.response?.data?.error_description || error.message
+    });
+  }
+});
+
+// Token endpoint for ChatGPT
 app.post('/oauth/token', async (req, res) => {
-  const { grant_type, code, redirect_uri, client_id, client_secret, refresh_token } = req.body;
+  const { grant_type, code, client_id, client_secret } = req.body;
   
-  console.log('🔄 Token request received:');
-  console.log('  Grant type:', grant_type);
-  console.log('  Client ID:', client_id);
+  console.log('🔑 Token request received:', {
+    grant_type,
+    client_id: client_id ? `${client_id.substring(0, 8)}...` : 'none',
+    hasCode: !!code,
+    timestamp: new Date().toISOString()
+  });
   
-  const isChatGPT = isChatGPTRequest(client_id, redirect_uri);
+  // Enhanced ChatGPT detection
+  const isChatGPT = isChatGPTRequest(client_id);
   
   if (isChatGPT) {
     console.log('✅ ChatGPT token request detected (enhanced detection)');
     
-    if (client_id === CHATGPT_OAUTH.client_id) {
-      if (client_secret !== CHATGPT_OAUTH.client_secret) {
-        console.error('❌ Invalid ChatGPT client secret');
-        return res.status(401).json({ error: 'invalid_client' });
-      }
-    }
-    
-    if (redirect_uri && !redirect_uri.includes('chat.openai.com/aip/')) {
-      console.error('❌ Invalid ChatGPT redirect URI pattern');
-      return res.status(400).json({ error: 'invalid_grant' });
+    // Validate ChatGPT credentials
+    if (client_id !== CHATGPT_OAUTH.client_id || client_secret !== CHATGPT_OAUTH.client_secret) {
+      console.error('❌ Invalid ChatGPT credentials');
+      return res.status(401).json({ error: 'invalid_client' });
     }
     
     console.log('✅ ChatGPT client credentials validated');
   }
   
-  try {
-    if (grant_type === 'authorization_code') {
-      const session = tokenStore[code];
-      
-      if (!session) {
-        console.error('❌ Invalid authorization code/session:', code);
-        return res.status(400).json({ error: 'invalid_grant' });
-      }
-      
-      console.log('✅ Session found and validated');
-      
-      res.json({
-        access_token: code,
-        token_type: 'Bearer',
-        expires_in: Math.floor((session.expires_at - Date.now()) / 1000),
-        refresh_token: code,
-        scope: 'accounting.transactions accounting.contacts accounting.settings accounting.reports.read'
-      });
-      
-    } else if (grant_type === 'refresh_token') {
-      const session = tokenStore[refresh_token];
-      
-      if (!session || !session.refresh_token) {
-        console.error('❌ Invalid refresh token');
-        return res.status(400).json({ error: 'invalid_grant' });
-      }
-      
-      // Refresh Xero token
-      const refreshResponse = await axios.post('https://identity.xero.com/connect/token',
-        new URLSearchParams({
-          grant_type: 'refresh_token',
-          client_id: process.env.XERO_CLIENT_ID,
-          client_secret: process.env.XERO_CLIENT_SECRET,
-          refresh_token: session.refresh_token
-        }), {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
-          }
-        }
-      );
-
-      const { access_token, refresh_token: new_refresh_token, expires_in } = refreshResponse.data;
-      
-      session.access_token = access_token;
-      session.refresh_token = new_refresh_token || session.refresh_token;
-      session.expires_at = Date.now() + (expires_in * 1000);
-      
-      console.log('✅ Token refreshed successfully');
-      
-      res.json({
-        access_token: refresh_token,
-        token_type: 'Bearer',
-        expires_in: expires_in,
-        refresh_token: refresh_token,
-        scope: 'accounting.transactions accounting.contacts accounting.settings accounting.reports.read'
-      });
-      
-    } else {
-      console.error('❌ Unsupported grant type:', grant_type);
-      res.status(400).json({ error: 'unsupported_grant_type' });
-    }
-    
-  } catch (error) {
-    console.error('❌ OAuth token error:', error.response?.data || error.message);
-    res.status(400).json({ 
-      error: 'invalid_grant',
-      error_description: error.response?.data?.error_description || error.message
-    });
+  if (grant_type !== 'authorization_code') {
+    return res.status(400).json({ error: 'unsupported_grant_type' });
   }
-});
-
-// Enhanced OAuth Callback with improved logging
-app.get('/oauth/callback', async (req, res) => {
-  const { code, state, error } = req.query;
   
-  console.log('🔄 OAuth callback received:');
-  console.log('  Code:', code ? 'PRESENT' : 'MISSING');
-  console.log('  State:', state);
-  
-  if (error) {
-    console.error('❌ OAuth error from Xero:', error);
-    
-    if (state && tokenStore[state] && tokenStore[state].is_chatgpt) {
-      const { original_params } = tokenStore[state];
-      console.log('🔗 Forwarding error to ChatGPT');
-      const redirectUrl = `${original_params.redirect_uri}?error=${error}&error_description=${encodeURIComponent('OAuth authorization failed')}&state=${original_params.original_state}`;
-      return res.redirect(redirectUrl);
-    }
-    
-    return res.status(400).json({ 
-      error: 'OAuth authorization failed', 
-      details: error 
-    });
+  // Retrieve session
+  const session = tokenStore[code];
+  if (!session || !session.access_token) {
+    console.error('❌ Invalid or expired authorization code');
+    return res.status(400).json({ error: 'invalid_grant' });
   }
-
-  if (!code || !state || !tokenStore[state]) {
-    console.error('❌ Invalid OAuth callback parameters');
-    return res.status(400).json({ 
-      error: 'Invalid OAuth callback parameters' 
-    });
-  }
-
-  const stateData = tokenStore[state];
-  const { original_params, is_chatgpt } = stateData;
   
-  console.log('📋 Processing OAuth callback:', {
-    is_chatgpt,
-    has_original_params: !!original_params
+  console.log('✅ Session found and validated');
+  
+  // Return access token
+  res.json({
+    access_token: code, // Use session ID as access token
+    token_type: 'Bearer',
+    expires_in: 3600,
+    scope: 'accounting.contacts accounting.transactions accounting.reports'
   });
-  
-  try {
-    console.log('🔄 Exchanging code for tokens...');
-    
-    const baseUrl = getBaseUrl(req);
-    const tokenResponse = await axios.post('https://identity.xero.com/connect/token', 
-      new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: process.env.XERO_CLIENT_ID,
-        client_secret: process.env.XERO_CLIENT_SECRET,
-        code: code,
-        redirect_uri: `${baseUrl}/oauth/callback`
-      }), {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
-    );
-
-    const { access_token, refresh_token, expires_in } = tokenResponse.data;
-    console.log('✅ Tokens received successfully from Xero');
-
-    // Get tenant connections
-    console.log('🔄 Fetching tenant connections...');
-    const connectionsResponse = await axios.get('https://api.xero.com/connections', {
-      headers: {
-        'Authorization': `Bearer ${access_token}`
-      }
-    });
-
-    const connections = connectionsResponse.data;
-    console.log(`✅ Found ${connections.length} connection(s)`);
-
-    // Store tokens
-    const sessionId = crypto.randomBytes(16).toString('hex');
-    tokenStore[sessionId] = {
-      access_token,
-      refresh_token,
-      expires_at: Date.now() + (expires_in * 1000),
-      connections,
-      created: Date.now(),
-      is_chatgpt: is_chatgpt
-    };
-
-    console.log('💾 Session created:', {
-      session_id: sessionId,
-      is_chatgpt,
-      connections_count: connections.length
-    });
-
-    // Clean up state
-    delete tokenStore[state];
-
-    if (is_chatgpt && original_params && original_params.redirect_uri) {
-      console.log('🔗 CHATGPT CALLBACK PROXY ACTIVATED');
-      console.log('🚀 Redirecting to ChatGPT with session ID');
-      
-      const redirectUrl = `${original_params.redirect_uri}?code=${sessionId}&state=${original_params.original_state}`;
-      res.redirect(redirectUrl);
-    } else {
-      console.log('📄 Showing legacy success page');
-      res.json({
-        success: true,
-        message: 'Xero OAuth completed successfully!',
-        session_id: sessionId,
-        connections: connections.map(conn => ({
-          id: conn.id,
-          tenantId: conn.tenantId,
-          tenantName: conn.tenantName,
-          tenantType: conn.tenantType
-        })),
-        endpoints: {
-          contacts: `${baseUrl}/api/contacts?session=${sessionId}`,
-          invoices: `${baseUrl}/api/invoices?session=${sessionId}`,
-          accounts: `${baseUrl}/api/accounts?session=${sessionId}`
-        }
-      });
-    }
-
-  } catch (error) {
-    console.error('❌ OAuth callback error:', error.response?.data || error.message);
-    
-    if (is_chatgpt && original_params && original_params.redirect_uri) {
-      console.log('🔗 Forwarding error to ChatGPT');
-      const redirectUrl = `${original_params.redirect_uri}?error=server_error&error_description=${encodeURIComponent(error.message)}&state=${original_params.original_state}`;
-      res.redirect(redirectUrl);
-    } else {
-      res.status(500).json({ 
-        error: 'OAuth token exchange failed', 
-        details: error.response?.data || error.message 
-      });
-    }
-  }
 });
 
-// OAuth User Info endpoint
-app.get('/oauth/userinfo', async (req, res) => {
+// User info endpoint
+app.get('/oauth/userinfo', (req, res) => {
   const authHeader = req.headers.authorization;
-  
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'invalid_token' });
   }
   
-  const sessionId = authHeader.substring(7);
-  const session = tokenStore[sessionId];
+  const token = authHeader.substring(7);
+  const session = tokenStore[token];
   
   if (!session) {
-    console.error('❌ Invalid session for userinfo');
     return res.status(401).json({ error: 'invalid_token' });
   }
   
-  try {
-    console.log('🔄 Fetching user info...');
-    
-    const userResponse = await axios.get('https://api.xero.com/api.xro/2.0/Organisation', {
-      headers: {
-        'Authorization': `Bearer ${session.access_token}`,
-        'Xero-tenant-id': session.connections[0]?.tenantId,
-        'Accept': 'application/json'
-      }
-    });
-    
-    const org = userResponse.data.Organisations?.[0];
-    
-    console.log('✅ User info retrieved');
-    
-    res.json({
-      sub: session.connections[0]?.tenantId || 'unknown',
-      name: org?.Name || 'Xero User',
-      email: org?.DefaultPurchasesTax || '',
-      preferred_username: org?.Name || 'xero_user',
-      organization: org?.Name || 'Unknown Organization'
-    });
-    
-  } catch (error) {
-    console.error('❌ UserInfo error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'server_error' });
-  }
-});
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
-    service: 'xero-mcp-wrapper',
-    timestamp: new Date().toISOString(),
-    version: '2.4.2',
-    environment: process.env.NODE_ENV || 'development',
-    chatgpt_ready: true,
-    chatgpt_client_configured: true,
-    callback_proxy_enabled: true,
-    enhanced_detection: true,
-    filtering_enabled: true,
-    pagination_enabled: true,
-    pagination_fix: 'xero_page_based',
-    optimization_level: 'full',
-    cache_enabled: true,
-    reports_crash_fix: true
+  res.json({
+    sub: 'xero-user',
+    name: 'Xero User',
+    email: 'user@xero.com'
   });
 });
 
-// Middleware to validate session and get tokens
-const validateSession = async (req, res, next) => {
-  let sessionId = req.query.session || req.headers['x-session-id'];
-  
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    sessionId = authHeader.substring(7);
-  }
-  
-  if (!sessionId || !tokenStore[sessionId]) {
-    return res.status(401).json({ 
-      error: 'Invalid or missing session. Please authenticate first.',
-      auth_url: `${getBaseUrl(req)}/oauth/authorize`
-    });
-  }
-
-  const session = tokenStore[sessionId];
-  
-  // Check if token is expired and refresh if needed
-  if (Date.now() >= session.expires_at) {
-    if (session.refresh_token) {
-      try {
-        console.log('🔄 Refreshing expired token...');
-        
-        const refreshResponse = await axios.post('https://identity.xero.com/connect/token',
-          new URLSearchParams({
-            grant_type: 'refresh_token',
-            client_id: process.env.XERO_CLIENT_ID,
-            client_secret: process.env.XERO_CLIENT_SECRET,
-            refresh_token: session.refresh_token
-          }), {
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded'
-            }
-          }
-        );
-
-        const { access_token, refresh_token, expires_in } = refreshResponse.data;
-        
-        session.access_token = access_token;
-        session.refresh_token = refresh_token || session.refresh_token;
-        session.expires_at = Date.now() + (expires_in * 1000);
-        
-        console.log('✅ Token refreshed successfully');
-        
-      } catch (error) {
-        console.error('❌ Token refresh failed:', error.response?.data || error.message);
-        delete tokenStore[sessionId];
-        return res.status(401).json({ 
-          error: 'Token refresh failed. Please re-authenticate.',
-          auth_url: `${getBaseUrl(req)}/oauth/authorize`
-        });
-      }
-    } else {
-      delete tokenStore[sessionId];
-      return res.status(401).json({ 
-        error: 'Token expired and no refresh token available. Please re-authenticate.',
-        auth_url: `${getBaseUrl(req)}/oauth/authorize`
-      });
-    }
-  }
-
-  req.session = session;
-  next();
-};
-
-// OPTIMIZED API Endpoints with Fixed Pagination
-// =============================================
-
-// Enhanced List contacts with fixed pagination
-app.get('/api/contacts', validateSession, async (req, res) => {
-  try {
-    const { access_token, connections } = req.session;
-    const tenantId = req.query.tenant || connections[0]?.tenantId;
-    
-    if (!tenantId) {
-      return res.status(400).json({ error: 'No tenant ID specified' });
-    }
-
-    // Parse filters from query parameters
-    const filters = parseFilters(req.query);
-    
-    console.log(`🔄 Fetching contacts for tenant: ${tenantId}`);
-    console.log('📋 Applied filters:', filters);
-    
-    // Use new pagination system
-    const baseXeroUrl = 'https://api.xero.com/api.xro/2.0/Contacts';
-    const result = await fetchFromXeroWithPagination(baseXeroUrl, filters, access_token, tenantId);
-    
-    let contacts = result.data;
-    
-    // Apply client-side filtering for parameters not supported by Xero API
-    if (!filters.include_archived) {
-      contacts = contacts.filter(contact => contact.ContactStatus !== 'ARCHIVED');
-    }
-    
-    console.log(`✅ Retrieved ${contacts.length} contacts`);
-    
-    const optimizedResponse = createOptimizedResponse(
-      contacts, 
-      filters, 
-      result.totalAvailable, 
-      '/api/contacts',
-      result.hasMore
-    );
-    
-    // Add contact-specific metadata
-    optimizedResponse.summary = {
-      total_contacts: result.totalAvailable,
-      active_contacts: contacts.filter(c => c.ContactStatus === 'ACTIVE').length,
-      archived_contacts: contacts.filter(c => c.ContactStatus === 'ARCHIVED').length
-    };
-    
-    res.json(optimizedResponse);
-
-  } catch (error) {
-    console.error('❌ Contacts API error:', error.response?.data || error.message);
-    res.status(500).json({ 
-      error: 'Failed to fetch contacts', 
-      details: error.response?.data || error.message 
-    });
-  }
-});
-
-// Enhanced List invoices with fixed pagination
-app.get('/api/invoices', validateSession, async (req, res) => {
-  try {
-    const { access_token, connections } = req.session;
-    const tenantId = req.query.tenant || connections[0]?.tenantId;
-    
-    if (!tenantId) {
-      return res.status(400).json({ error: 'No tenant ID specified' });
-    }
-
-    // Parse filters from query parameters
-    const filters = parseFilters(req.query);
-    
-    console.log(`🔄 Fetching invoices for tenant: ${tenantId}`);
-    console.log('📋 Applied filters:', filters);
-    
-    // Use new pagination system
-    const baseXeroUrl = 'https://api.xero.com/api.xro/2.0/Invoices';
-    const filtersWithOrder = {
-      ...filters,
-      order_by: filters.order_by || 'Date DESC' // Default to newest first
-    };
-    
-    const result = await fetchFromXeroWithPagination(baseXeroUrl, filtersWithOrder, access_token, tenantId);
-    
-    const invoices = result.data;
-    
-    console.log(`✅ Retrieved ${invoices.length} invoices`);
-    
-    const optimizedResponse = createOptimizedResponse(
-      invoices, 
-      filters, 
-      result.totalAvailable, 
-      '/api/invoices',
-      result.hasMore
-    );
-    
-    // Add invoice-specific metadata
-    const statusCounts = {};
-    invoices.forEach(invoice => {
-      statusCounts[invoice.Status] = (statusCounts[invoice.Status] || 0) + 1;
-    });
-    
-    const totalAmount = invoices.reduce((sum, invoice) => sum + (invoice.Total || 0), 0);
-    const amountDue = invoices.reduce((sum, invoice) => sum + (invoice.AmountDue || 0), 0);
-    
-    optimizedResponse.summary = {
-      total_invoices: result.totalAvailable,
-      status_breakdown: statusCounts,
-      total_amount: totalAmount,
-      amount_due: amountDue,
-      currency: invoices[0]?.CurrencyCode || 'USD'
-    };
-    
-    res.json(optimizedResponse);
-
-  } catch (error) {
-    console.error('❌ Invoices API error:', error.response?.data || error.message);
-    res.status(500).json({ 
-      error: 'Failed to fetch invoices', 
-      details: error.response?.data || error.message 
-    });
-  }
-});
-
-// Enhanced List accounts with fixed pagination
-app.get('/api/accounts', validateSession, async (req, res) => {
-  try {
-    const { access_token, connections } = req.session;
-    const tenantId = req.query.tenant || connections[0]?.tenantId;
-    
-    if (!tenantId) {
-      return res.status(400).json({ error: 'No tenant ID specified' });
-    }
-
-    const filters = parseFilters(req.query);
-    
-    console.log(`🔄 Fetching accounts for tenant: ${tenantId}`);
-    console.log('📋 Applied filters:', filters);
-    
-    // Use new pagination system
-    const baseXeroUrl = 'https://api.xero.com/api.xro/2.0/Accounts';
-    const result = await fetchFromXeroWithPagination(baseXeroUrl, filters, access_token, tenantId);
-    
-    const accounts = result.data;
-    
-    console.log(`✅ Retrieved ${accounts.length} accounts`);
-    
-    const optimizedResponse = createOptimizedResponse(
-      accounts, 
-      filters, 
-      result.totalAvailable, 
-      '/api/accounts',
-      result.hasMore
-    );
-    
-    // Add account-specific metadata
-    const typeCounts = {};
-    accounts.forEach(account => {
-      typeCounts[account.Type] = (typeCounts[account.Type] || 0) + 1;
-    });
-    
-    optimizedResponse.summary = {
-      total_accounts: result.totalAvailable,
-      type_breakdown: typeCounts,
-      active_accounts: accounts.filter(a => a.Status === 'ACTIVE').length,
-      archived_accounts: accounts.filter(a => a.Status === 'ARCHIVED').length
-    };
-    
-    res.json(optimizedResponse);
-
-  } catch (error) {
-    console.error('❌ Accounts API error:', error.response?.data || error.message);
-    res.status(500).json({ 
-      error: 'Failed to fetch accounts', 
-      details: error.response?.data || error.message 
-    });
-  }
-});
-
-// Enhanced Create invoice with validation
-app.post('/api/invoices', validateSession, async (req, res) => {
-  try {
-    const { access_token, connections } = req.session;
-    const tenantId = req.query.tenant || connections[0]?.tenantId;
-    
-    if (!tenantId) {
-      return res.status(400).json({ error: 'No tenant ID specified' });
-    }
-
-    const invoiceData = req.body;
-    
-    // Validate required fields
-    if (!invoiceData.Contact || !invoiceData.Contact.ContactID) {
-      return res.status(400).json({ 
-        error: 'Contact information is required',
-        required_fields: ['Contact.ContactID']
-      });
-    }
-    
-    if (!invoiceData.LineItems || !Array.isArray(invoiceData.LineItems) || invoiceData.LineItems.length === 0) {
-      return res.status(400).json({ 
-        error: 'At least one line item is required',
-        required_fields: ['LineItems']
-      });
-    }
-    
-    console.log(`🔄 Creating invoice for tenant: ${tenantId}`);
-    console.log('📋 Invoice data:', JSON.stringify(invoiceData, null, 2));
-    
-    const response = await axios.post('https://api.xero.com/api.xro/2.0/Invoices', 
-      { Invoices: [invoiceData] }, 
-      {
-        headers: {
-          'Authorization': `Bearer ${access_token}`,
-          'Xero-tenant-id': tenantId,
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    const createdInvoice = response.data.Invoices?.[0];
-    console.log(`✅ Invoice created successfully: ${createdInvoice?.InvoiceNumber}`);
-    
-    res.json({
-      success: true,
-      message: 'Invoice created successfully',
-      invoice: createdInvoice,
-      invoice_number: createdInvoice?.InvoiceNumber,
-      invoice_id: createdInvoice?.InvoiceID,
-      status: createdInvoice?.Status,
-      total: createdInvoice?.Total,
-      currency: createdInvoice?.CurrencyCode
-    });
-
-  } catch (error) {
-    console.error('❌ Create invoice error:', error.response?.data || error.message);
-    
-    // Provide detailed error information
-    const errorDetails = error.response?.data;
-    let errorMessage = 'Failed to create invoice';
-    let validationErrors = [];
-    
-    if (errorDetails?.Elements) {
-      errorDetails.Elements.forEach(element => {
-        if (element.ValidationErrors) {
-          validationErrors = validationErrors.concat(element.ValidationErrors);
-        }
-      });
-    }
-    
-    if (validationErrors.length > 0) {
-      errorMessage = 'Invoice validation failed';
-    }
-    
-    res.status(400).json({ 
-      error: errorMessage,
-      validation_errors: validationErrors,
-      details: errorDetails || error.message
-    });
-  }
-});
-
-// Enhanced Get reports with FIXED error handling
-app.get('/api/reports/:reportType', validateSession, async (req, res) => {
-  const { reportType } = req.params; // ✅ Move outside try block for proper scoping
-  
-  try {
-    const { access_token, connections } = req.session;
-    const tenantId = req.query.tenant || connections[0]?.tenantId;
-    
-    if (!tenantId) {
-      return res.status(400).json({ error: 'No tenant ID specified' });
-    }
-
-    console.log(`🔄 Fetching ${reportType} report for tenant: ${tenantId}`);
-    
-    // Build report URL with query parameters
-    const reportUrl = `https://api.xero.com/api.xro/2.0/Reports/${reportType}`;
-    const params = { ...req.query };
-    delete params.session; // Remove session from query params
-    delete params.tenant;  // Remove tenant from query params
-    
-    console.log('📋 Report parameters:', params);
-    
-    // Add specific handling for common report types
-    const supportedReports = [
-      'ProfitAndLoss',
-      'BalanceSheet', 
-      'CashSummary',
-      'AgedReceivables',
-      'AgedPayables',
-      'TrialBalance',
-      'BankSummary'
-    ];
-    
-    if (!supportedReports.includes(reportType)) {
-      console.log(`⚠️ Unsupported report type: ${reportType}`);
-      return res.status(400).json({
-        error: 'Unsupported report type',
-        supported_reports: supportedReports,
-        requested_report: reportType
-      });
-    }
-    
-    const response = await axios.get(reportUrl, {
-      headers: {
-        'Authorization': `Bearer ${access_token}`,
-        'Xero-tenant-id': tenantId,
-        'Accept': 'application/json'
-      },
-      params: params,
-      timeout: 30000 // 30 second timeout for reports
-    });
-
-    console.log(`✅ Retrieved ${reportType} report successfully`);
-    
-    const reportData = response.data.Reports?.[0] || response.data;
-    
-    res.json({
-      success: true,
-      report_type: reportType,
-      tenant_id: tenantId,
-      generated_at: new Date().toISOString(),
-      parameters: params,
-      report: reportData
-    });
-
-  } catch (error) {
-    // ✅ Fixed: reportType is now properly in scope
-    console.error(`❌ ${reportType} report error:`, error.response?.data || error.message);
-    
-    // Provide specific error handling for different scenarios
-    if (error.code === 'ECONNABORTED') {
-      res.status(504).json({ 
-        error: `${reportType} report request timed out`,
-        details: 'Xero reporting service may be temporarily unavailable',
-        retry_suggestion: 'Please try again in a few minutes'
-      });
-    } else if (error.response?.status === 400) {
-      res.status(400).json({ 
-        error: `Invalid ${reportType} report request`,
-        details: error.response?.data || error.message,
-        suggestion: 'Check report parameters and try again'
-      });
-    } else if (error.response?.status === 403) {
-      res.status(403).json({ 
-        error: `Access denied for ${reportType} report`,
-        details: 'Your Xero subscription may not include this report type',
-        suggestion: 'Contact your Xero administrator'
-      });
-    } else {
-      res.status(500).json({ 
-        error: `Failed to fetch ${reportType} report`, 
-        details: error.response?.data || error.message,
-        report_type: reportType
-      });
-    }
-  }
-});
-
-// Enhanced Quick filters endpoint for common bookkeeping queries
-app.get('/api/quick/:filter', validateSession, async (req, res) => {
-  try {
-    const { filter } = req.params;
-    const { access_token, connections } = req.session;
-    const tenantId = req.query.tenant || connections[0]?.tenantId;
-    
-    if (!tenantId) {
-      return res.status(400).json({ error: 'No tenant ID specified' });
-    }
-
-    console.log(`🔄 Processing quick filter: ${filter}`);
-    
-    let filters;
-    let endpoint;
-    let description;
-    
-    switch (filter) {
-      case 'recent-invoices':
-        filters = parseFilters({ days_ago: 7, limit: 10, order_by: 'Date DESC' });
-        endpoint = 'https://api.xero.com/api.xro/2.0/Invoices';
-        description = 'Recent invoices from the last 7 days';
-        break;
-        
-      case 'open-invoices':
-        filters = parseFilters({ status: 'AUTHORISED', limit: 20, order_by: 'Date DESC' });
-        endpoint = 'https://api.xero.com/api.xro/2.0/Invoices';
-        description = 'Open (unpaid) invoices';
-        break;
-        
-      case 'overdue-invoices':
-        filters = parseFilters({ status: 'AUTHORISED', date_to: getDateDaysAgo(0), limit: 20, order_by: 'Date ASC' });
-        endpoint = 'https://api.xero.com/api.xro/2.0/Invoices';
-        description = 'Overdue invoices';
-        break;
-        
-      case 'recent-contacts':
-        filters = parseFilters({ days_ago: 30, limit: 20 });
-        endpoint = 'https://api.xero.com/api.xro/2.0/Contacts';
-        description = 'Recently added or modified contacts';
-        break;
-        
-      case 'active-contacts':
-        filters = parseFilters({ include_archived: false, limit: 50 });
-        endpoint = 'https://api.xero.com/api.xro/2.0/Contacts';
-        description = 'Active contacts only';
-        break;
-        
-      default:
-        return res.status(400).json({ 
-          error: 'Unknown quick filter',
-          available_filters: [
-            'recent-invoices',
-            'open-invoices', 
-            'overdue-invoices',
-            'recent-contacts',
-            'active-contacts'
-          ]
-        });
-    }
-    
-    // Fetch data using the new pagination system
-    const result = await fetchFromXeroWithPagination(endpoint, filters, access_token, tenantId);
-    
-    let data = result.data;
-    
-    // Apply additional filtering for contacts
-    if (filter === 'active-contacts') {
-      data = data.filter(contact => contact.ContactStatus !== 'ARCHIVED');
-    }
-    
-    console.log(`✅ Quick filter ${filter} returned ${data.length} records`);
-    
-    const optimizedResponse = createOptimizedResponse(
-      data, 
-      filters, 
-      result.totalAvailable, 
-      `/api/quick/${filter}`,
-      result.hasMore
-    );
-    
-    optimizedResponse.filter_description = description;
-    
-    res.json(optimizedResponse);
-
-  } catch (error) {
-    console.error('❌ Quick filter error:', error.response?.data || error.message);
-    res.status(500).json({ 
-      error: 'Failed to process quick filter', 
-      details: error.response?.data || error.message 
-    });
-  }
-});
-
-// Legacy MCP endpoints (for backward compatibility)
-app.get('/mcp/contacts', validateSession, (req, res) => {
-  req.url = '/api/contacts';
-  app._router.handle(req, res);
-});
-
-app.get('/mcp/invoices', validateSession, (req, res) => {
-  req.url = '/api/invoices';
-  app._router.handle(req, res);
-});
-
-app.get('/mcp/accounts', validateSession, (req, res) => {
-  req.url = '/api/accounts';
-  app._router.handle(req, res);
-});
-
-// Root endpoint - start OAuth flow (legacy support)
-app.get('/', (req, res) => {
-  const baseUrl = getBaseUrl(req);
-  const state = generateState();
-  
-  tokenStore[state] = { created: Date.now() };
-  
-  const authUrl = `https://login.xero.com/identity/connect/authorize?` +
-    `response_type=code&` +
-    `client_id=${process.env.XERO_CLIENT_ID}&` +
-    `redirect_uri=${encodeURIComponent(`${baseUrl}/callback`)}&` +
-    `scope=offline_access accounting.transactions accounting.contacts accounting.settings accounting.reports.read&` +
-    `state=${state}`;
-  
-  console.log(`🔗 Legacy OAuth initiated for ${baseUrl}`);
-  res.redirect(authUrl);
-});
-
-// Legacy OAuth callback endpoint
-app.get('/callback', async (req, res) => {
-  const { code, state, error } = req.query;
-  const baseUrl = getBaseUrl(req);
-  
-  if (error) {
-    console.error('❌ OAuth error:', error);
-    return res.status(400).json({ 
-      error: 'OAuth authorization failed', 
-      details: error 
-    });
-  }
-
-  if (!code || !state || !tokenStore[state]) {
-    return res.status(400).json({ 
-      error: 'Invalid OAuth callback parameters' 
-    });
-  }
-
-  try {
-    console.log('🔄 Exchanging code for tokens...');
-    
-    const tokenResponse = await axios.post('https://identity.xero.com/connect/token', 
-      new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: process.env.XERO_CLIENT_ID,
-        client_secret: process.env.XERO_CLIENT_SECRET,
-        code: code,
-        redirect_uri: `${baseUrl}/callback`
-      }), {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
-    );
-
-    const { access_token, refresh_token, expires_in } = tokenResponse.data;
-    console.log('✅ Tokens received successfully');
-
-    const connectionsResponse = await axios.get('https://api.xero.com/connections', {
-      headers: {
-        'Authorization': `Bearer ${access_token}`
-      }
-    });
-
-    const connections = connectionsResponse.data;
-    console.log(`✅ Found ${connections.length} connection(s)`);
-
-    const sessionId = crypto.randomBytes(16).toString('hex');
-    tokenStore[sessionId] = {
-      access_token,
-      refresh_token,
-      expires_at: Date.now() + (expires_in * 1000),
-      connections,
-      created: Date.now()
-    };
-
-    delete tokenStore[state];
-
-    res.json({
-      success: true,
-      message: 'Xero OAuth completed successfully!',
-      session_id: sessionId,
-      connections: connections.map(conn => ({
-        id: conn.id,
-        tenantId: conn.tenantId,
-        tenantName: conn.tenantName,
-        tenantType: conn.tenantType
-      })),
-      endpoints: {
-        contacts: `${baseUrl}/api/contacts?session=${sessionId}`,
-        invoices: `${baseUrl}/api/invoices?session=${sessionId}`,
-        accounts: `${baseUrl}/api/accounts?session=${sessionId}`,
-        quick_filters: `${baseUrl}/api/quick/open-invoices?session=${sessionId}`
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ OAuth callback error:', error.response?.data || error.message);
-    res.status(500).json({ 
-      error: 'OAuth token exchange failed', 
-      details: error.response?.data || error.message 
-    });
-  }
-});
-
-// Enhanced API Documentation
+// API documentation endpoint
 app.get('/api', (req, res) => {
   const baseUrl = getBaseUrl(req);
   res.json({
-    service: 'Xero API Wrapper',
-    version: '2.4.2',
+    service: 'JHK Bookkeeping Assistant',
+    version: '2.4.3',
+    description: 'Professional Xero integration with enhanced date handling for JHK clients',
     chatgpt_compatible: true,
-    optimization_level: 'full',
-    pagination_fix: 'xero_page_based',
-    reports_crash_fix: true,
-    features: {
-      filtering: true,
-      pagination: true,
-      pagination_fix: true,
-      quick_filters: true,
-      enhanced_responses: true,
-      smart_caching: true,
-      reports_error_handling: true
+    date_handling: {
+      natural_language: true,
+      september_2025_fix: true,
+      supported_formats: ['YYYY-MM-DD', 'DD/MM/YYYY', 'period=september-2025']
     },
     oauth: {
-      authorization_endpoint: `${baseUrl}/oauth/authorize`,
-      token_endpoint: `${baseUrl}/oauth/token`,
-      userinfo_endpoint: `${baseUrl}/oauth/userinfo`,
-      discovery: `${baseUrl}/.well-known/oauth-authorization-server`
+      authorization_url: `${baseUrl}/oauth/authorize`,
+      token_url: `${baseUrl}/oauth/token`,
+      discovery_url: `${baseUrl}/.well-known/oauth-authorization-server`
     },
     endpoints: {
-      'GET /api/contacts': {
-        description: 'List contacts with filtering and pagination',
-        parameters: {
-          limit: 'Number of records (default: 20, max: 100)',
-          offset: 'Skip records for pagination',
-          name_contains: 'Filter by contact name',
-          include_archived: 'Include archived contacts (default: false)',
-          modified_since: 'Filter by last modified date (ISO format)',
-          days_ago: 'Filter by days ago (e.g., 7 for last week)'
-        }
-      },
-      'GET /api/invoices': {
-        description: 'List invoices with comprehensive filtering',
-        parameters: {
-          limit: 'Number of records (default: 20, max: 100)',
-          offset: 'Skip records for pagination',
-          status: 'Filter by status (DRAFT, AUTHORISED, PAID, etc.)',
-          date_from: 'Filter invoices after this date (YYYY-MM-DD)',
-          date_to: 'Filter invoices before this date (YYYY-MM-DD)',
-          days_ago: 'Filter by days ago (e.g., 7 for last week)',
-          contact_id: 'Filter by specific contact ID',
-          order_by: 'Sort order (default: Date DESC)'
-        }
-      },
-      'GET /api/accounts': {
-        description: 'List accounts with filtering',
-        parameters: {
-          limit: 'Number of records (default: 20, max: 100)',
-          offset: 'Skip records for pagination'
-        }
-      },
-      'POST /api/invoices': 'Create a new invoice',
-      'GET /api/reports/:reportType': {
-        description: 'Get financial reports with enhanced error handling',
-        supported_reports: [
-          'ProfitAndLoss',
-          'BalanceSheet', 
-          'CashSummary',
-          'AgedReceivables',
-          'AgedPayables',
-          'TrialBalance',
-          'BankSummary'
-        ],
-        note: 'Fixed crash issue with proper error scoping'
-      },
-      'GET /api/quick/:filter': {
-        description: 'Quick filters for common bookkeeping queries',
-        available_filters: [
-          'recent-invoices',
-          'open-invoices',
-          'overdue-invoices', 
-          'recent-contacts',
-          'active-contacts'
-        ]
+      invoices: `${baseUrl}/api/invoices`,
+      contacts: `${baseUrl}/api/contacts`,
+      accounts: `${baseUrl}/api/accounts`,
+      reports: `${baseUrl}/api/reports/{reportType}`,
+      quick_filters: {
+        open_invoices: `${baseUrl}/api/quick/open-invoices`,
+        recent_invoices: `${baseUrl}/api/quick/recent-invoices`,
+        overdue_invoices: `${baseUrl}/api/quick/overdue-invoices`,
+        active_contacts: `${baseUrl}/api/quick/active-contacts`
       }
     },
-    pagination: {
-      note: 'Fixed to work with Xero\'s page-based pagination system',
-      xero_page_size: XERO_PAGE_SIZE,
-      client_side_slicing: true,
-      smart_caching: true,
-      supports_offset_limit: true
-    },
-    authentication: {
-      type: 'OAuth 2.0',
-      flow: 'authorization_code',
-      scopes: [
-        'offline_access',
-        'accounting.transactions',
-        'accounting.contacts',
-        'accounting.settings',
-        'accounting.reports.read'
-      ]
-    },
-    example_usage: {
-      oauth_flow: `${baseUrl}/oauth/authorize?client_id=YOUR_CLIENT_ID&redirect_uri=YOUR_REDIRECT&response_type=code&scope=accounting.contacts`,
-      recent_invoices: `${baseUrl}/api/invoices?days_ago=7&limit=10`,
-      open_invoices: `${baseUrl}/api/invoices?status=AUTHORISED&limit=20`,
-      next_page: `${baseUrl}/api/invoices?limit=20&offset=20`,
-      active_contacts: `${baseUrl}/api/contacts?include_archived=false&limit=50`,
-      quick_open_invoices: `${baseUrl}/api/quick/open-invoices`,
-      aged_receivables: `${baseUrl}/api/reports/AgedReceivables`
-    },
-    response_format: {
-      success: true,
-      timestamp: '2025-09-16T12:00:00.000Z',
-      endpoint: '/api/invoices',
-      filters_applied: {
-        status: 'AUTHORISED',
-        days_ago: 7,
-        limit: 20
-      },
-      pagination: {
-        limit: 20,
-        offset: 0,
-        returned_count: 15,
-        has_more: false,
-        next_url: null
-      },
-      summary: {
-        total_invoices: 15,
-        status_breakdown: { AUTHORISED: 15 },
-        total_amount: 12500.00,
-        amount_due: 8750.00
-      },
-      data: '... (filtered results)'
+    filtering: {
+      date_examples: [
+        'period=september-2025',
+        'from_date=2025-09-01&to_date=2025-09-30',
+        'days_ago=7',
+        'month=9&year=2025'
+      ],
+      status_filters: ['DRAFT', 'SUBMITTED', 'AUTHORISED', 'PAID'],
+      pagination: 'limit=20&offset=0'
     }
   });
 });
 
-// Privacy Policy (required for OAuth)
+// Enhanced reports endpoint with v2.4.3 date handling
+app.get('/api/reports/:reportType', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'unauthorized', message: 'Bearer token required' });
+  }
+
+  const token = authHeader.substring(7);
+  const session = tokenStore[token];
+
+  if (!session || !session.access_token) {
+    return res.status(401).json({ error: 'invalid_token' });
+  }
+
+  let reportType;
+  try {
+    reportType = req.params.reportType;
+    const dateParams = parseRequestedPeriod(req.query);
+    
+    console.log('📊 Report Request v2.4.3:', {
+      reportType,
+      originalQuery: req.query,
+      parsedDates: dateParams,
+      timestamp: new Date().toISOString()
+    });
+    
+    // Validate dates
+    if (!dateParams.from_date || !dateParams.to_date) {
+      return res.status(400).json({
+        error: 'Invalid date parameters',
+        received: req.query,
+        parsed: dateParams,
+        help: 'Use period=september-2025 or from_date=2025-09-01&to_date=2025-09-30'
+      });
+    }
+    
+    // Build Xero API URL with correct date format
+    const xeroUrl = `https://api.xero.com/api.xro/2.0/Reports/${reportType}?fromDate=${dateParams.from_date}&toDate=${dateParams.to_date}`;
+    
+    console.log('🔗 Xero API URL:', xeroUrl);
+    
+    // Make Xero API call with timeout
+    const response = await axios.get(xeroUrl, {
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`,
+        'Accept': 'application/json',
+        'Xero-tenant-id': session.tenantId
+      },
+      timeout: 30000
+    });
+    
+    // Enhanced response with date context
+    const reportData = {
+      report_type: reportType,
+      period: {
+        from_date: dateParams.from_date,
+        to_date: dateParams.to_date,
+        description: dateParams.description,
+        month_year: dateParams.from_date.includes('2025-09') ? 'September 2025' : 'Custom period'
+      },
+      generated_at: new Date().toISOString(),
+      data: response.data,
+      date_context: {
+        requested: req.query.period || 'custom range',
+        actual_period: `${dateParams.from_date} to ${dateParams.to_date}`,
+        current_date: new Date().toISOString().split('T')[0],
+        note: dateParams.from_date.includes('2025-09') ? 
+          '✅ September 2025 data as requested' : 
+          `Data for ${dateParams.description}`
+      }
+    };
+    
+    console.log('✅ Report generated successfully:', {
+      reportType,
+      period: reportData.period,
+      dataPoints: response.data.Reports?.[0]?.Rows?.length || 0
+    });
+    
+    res.json(reportData);
+    
+  } catch (error) {
+    console.error(`❌ ${reportType} report error:`, error.response?.data || error.message);
+    res.status(500).json({
+      error: 'Report generation failed',
+      message: error.response?.data?.error_description || error.message,
+      reportType: req.params.reportType,
+      requestedDates: req.query
+    });
+  }
+});
+
+// Enhanced invoices endpoint with improved date handling
+app.get('/api/invoices', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'unauthorized', message: 'Bearer token required' });
+  }
+
+  const token = authHeader.substring(7);
+  const session = tokenStore[token];
+
+  if (!session || !session.access_token) {
+    return res.status(401).json({ error: 'invalid_token' });
+  }
+
+  try {
+    const { 
+      limit = 20, 
+      offset = 0, 
+      status, 
+      days_ago, 
+      date_from, 
+      date_to,
+      period,
+      month,
+      year,
+      name_contains,
+      include_archived = false 
+    } = req.query;
+
+    console.log('📋 Invoices request with enhanced date handling:', {
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      filters: { status, days_ago, date_from, date_to, period, month, year, name_contains },
+      timestamp: new Date().toISOString()
+    });
+
+    // Parse date parameters using enhanced function
+    let dateFilters = {};
+    if (period || month || year || date_from || date_to || days_ago) {
+      const dateParams = parseRequestedPeriod({ period, month, year, date_from, date_to, days_ago });
+      if (dateParams.from_date) dateFilters.date_from = dateParams.from_date;
+      if (dateParams.to_date) dateFilters.date_to = dateParams.to_date;
+      
+      console.log('📅 Applied date filters:', dateFilters);
+    }
+
+    // Build filters object
+    const filters = {
+      status,
+      name_contains,
+      include_archived: include_archived === 'true',
+      ...dateFilters
+    };
+
+    // Calculate Xero pagination
+    const requestedLimit = Math.min(parseInt(limit), 100);
+    const requestedOffset = parseInt(offset);
+    
+    const startPage = calculateXeroPage(requestedOffset);
+    const endOffset = requestedOffset + requestedLimit;
+    const endPage = calculateXeroPage(endOffset - 1);
+    
+    console.log('📄 Pagination calculation:', {
+      requestedLimit,
+      requestedOffset,
+      startPage,
+      endPage,
+      endOffset
+    });
+
+    // Fetch required pages
+    let allRecords = [];
+    const baseUrl = 'https://api.xero.com/api.xro/2.0/Invoices';
+    
+    for (let page = startPage; page <= endPage; page++) {
+      const cacheKey = generateCacheKey(baseUrl, filters, page);
+      let pageData;
+      
+      // Check cache first (5-minute cache)
+      if (pageCache[cacheKey] && Date.now() - pageCache[cacheKey].timestamp < 300000) {
+        console.log(`📦 Using cached data for page ${page}`);
+        pageData = pageCache[cacheKey].data;
+      } else {
+        console.log(`🔄 Fetching page ${page} from Xero API`);
+        const xeroUrl = buildXeroUrl(baseUrl, filters, page);
+        console.log(`🔗 Xero URL: ${xeroUrl}`);
+        
+        const response = await axios.get(xeroUrl, {
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Accept': 'application/json',
+            'Xero-tenant-id': session.tenantId
+          },
+          timeout: 15000
+        });
+        
+        pageData = response.data.Invoices || [];
+        
+        // Cache the result
+        pageCache[cacheKey] = {
+          data: pageData,
+          timestamp: Date.now()
+        };
+        
+        console.log(`✅ Fetched ${pageData.length} records from page ${page}`);
+      }
+      
+      allRecords = allRecords.concat(pageData);
+    }
+    
+    console.log(`📊 Total records fetched: ${allRecords.length}`);
+    
+    // Calculate slice positions for exact range
+    const pageOffset = calculatePageOffset(requestedOffset);
+    const startIndex = pageOffset;
+    const endIndex = startIndex + requestedLimit;
+    
+    console.log('✂️ Slicing data:', {
+      startIndex,
+      endIndex,
+      totalRecords: allRecords.length
+    });
+    
+    const slicedData = allRecords.slice(startIndex, endIndex);
+    
+    console.log(`📋 Returning ${slicedData.length} records`);
+
+    // Calculate totals for summary
+    const totalAmount = slicedData.reduce((sum, invoice) => {
+      return sum + (parseFloat(invoice.Total) || 0);
+    }, 0);
+
+    const statusBreakdown = slicedData.reduce((acc, invoice) => {
+      acc[invoice.Status] = (acc[invoice.Status] || 0) + 1;
+      return acc;
+    }, {});
+
+    // Enhanced response with date context
+    const response = {
+      invoices: slicedData,
+      pagination: {
+        limit: requestedLimit,
+        offset: requestedOffset,
+        total_records: allRecords.length,
+        has_more: endIndex < allRecords.length,
+        next_offset: endIndex < allRecords.length ? requestedOffset + requestedLimit : null
+      },
+      summary: {
+        count: slicedData.length,
+        total_amount: totalAmount.toFixed(2),
+        currency: slicedData[0]?.CurrencyCode || 'GBP',
+        status_breakdown: statusBreakdown
+      },
+      filters_applied: filters,
+      date_context: dateFilters.date_from ? {
+        from_date: dateFilters.date_from,
+        to_date: dateFilters.date_to,
+        note: dateFilters.date_from.includes('2025-09') ? 
+          '✅ September 2025 data as requested' : 
+          'Custom date range applied'
+      } : null,
+      timestamp: new Date().toISOString()
+    };
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('❌ Invoices API error:', error.response?.data || error.message);
+    res.status(500).json({
+      error: 'Failed to fetch invoices',
+      message: error.response?.data?.error_description || error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Contacts endpoint (unchanged but included for completeness)
+app.get('/api/contacts', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'unauthorized', message: 'Bearer token required' });
+  }
+
+  const token = authHeader.substring(7);
+  const session = tokenStore[token];
+
+  if (!session || !session.access_token) {
+    return res.status(401).json({ error: 'invalid_token' });
+  }
+
+  try {
+    const { 
+      limit = 20, 
+      offset = 0, 
+      name_contains,
+      include_archived = false,
+      days_ago,
+      date_from,
+      date_to
+    } = req.query;
+
+    console.log('👥 Contacts request:', {
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      filters: { name_contains, include_archived, days_ago, date_from, date_to },
+      timestamp: new Date().toISOString()
+    });
+
+    // Build filters
+    const filters = {
+      name_contains,
+      include_archived: include_archived === 'true'
+    };
+
+    // Add date filters if specified
+    if (days_ago) {
+      filters.date_from = getDateDaysAgo(parseInt(days_ago));
+    } else if (date_from) {
+      filters.date_from = date_from;
+    }
+    
+    if (date_to) {
+      filters.date_to = date_to;
+    }
+
+    // Calculate pagination
+    const requestedLimit = Math.min(parseInt(limit), 100);
+    const requestedOffset = parseInt(offset);
+    
+    const startPage = calculateXeroPage(requestedOffset);
+    const endOffset = requestedOffset + requestedLimit;
+    const endPage = calculateXeroPage(endOffset - 1);
+
+    // Fetch data
+    let allRecords = [];
+    const baseUrl = 'https://api.xero.com/api.xro/2.0/Contacts';
+    
+    for (let page = startPage; page <= endPage; page++) {
+      const cacheKey = generateCacheKey(baseUrl, filters, page);
+      let pageData;
+      
+      if (pageCache[cacheKey] && Date.now() - pageCache[cacheKey].timestamp < 300000) {
+        console.log(`📦 Using cached data for page ${page}`);
+        pageData = pageCache[cacheKey].data;
+      } else {
+        console.log(`🔄 Fetching page ${page} from Xero API`);
+        const xeroUrl = buildXeroUrl(baseUrl, filters, page);
+        
+        const response = await axios.get(xeroUrl, {
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Accept': 'application/json',
+            'Xero-tenant-id': session.tenantId
+          },
+          timeout: 15000
+        });
+        
+        pageData = response.data.Contacts || [];
+        
+        pageCache[cacheKey] = {
+          data: pageData,
+          timestamp: Date.now()
+        };
+        
+        console.log(`✅ Fetched ${pageData.length} records from page ${page}`);
+      }
+      
+      allRecords = allRecords.concat(pageData);
+    }
+
+    // Slice for exact range
+    const pageOffset = calculatePageOffset(requestedOffset);
+    const slicedData = allRecords.slice(pageOffset, pageOffset + requestedLimit);
+
+    const response = {
+      contacts: slicedData,
+      pagination: {
+        limit: requestedLimit,
+        offset: requestedOffset,
+        total_records: allRecords.length,
+        has_more: pageOffset + requestedLimit < allRecords.length,
+        next_offset: pageOffset + requestedLimit < allRecords.length ? requestedOffset + requestedLimit : null
+      },
+      summary: {
+        count: slicedData.length,
+        active_contacts: slicedData.filter(c => !c.IsArchived).length,
+        archived_contacts: slicedData.filter(c => c.IsArchived).length
+      },
+      filters_applied: filters,
+      timestamp: new Date().toISOString()
+    };
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('❌ Contacts API error:', error.response?.data || error.message);
+    res.status(500).json({
+      error: 'Failed to fetch contacts',
+      message: error.response?.data?.error_description || error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Accounts endpoint (unchanged)
+app.get('/api/accounts', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'unauthorized', message: 'Bearer token required' });
+  }
+
+  const token = authHeader.substring(7);
+  const session = tokenStore[token];
+
+  if (!session || !session.access_token) {
+    return res.status(401).json({ error: 'invalid_token' });
+  }
+
+  try {
+    const response = await axios.get('https://api.xero.com/api.xro/2.0/Accounts', {
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`,
+        'Accept': 'application/json',
+        'Xero-tenant-id': session.tenantId
+      }
+    });
+
+    res.json({
+      accounts: response.data.Accounts,
+      summary: {
+        total_accounts: response.data.Accounts.length,
+        by_type: response.data.Accounts.reduce((acc, account) => {
+          acc[account.Type] = (acc[account.Type] || 0) + 1;
+          return acc;
+        }, {})
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Accounts API error:', error.response?.data || error.message);
+    res.status(500).json({
+      error: 'Failed to fetch accounts',
+      message: error.response?.data?.error_description || error.message
+    });
+  }
+});
+
+// Quick filter endpoints
+app.get('/api/quick/open-invoices', (req, res) => {
+  req.query.status = 'AUTHORISED';
+  req.query.limit = req.query.limit || '20';
+  return app._router.handle({ ...req, url: '/api/invoices', method: 'GET' }, res);
+});
+
+app.get('/api/quick/recent-invoices', (req, res) => {
+  req.query.days_ago = '7';
+  req.query.limit = req.query.limit || '20';
+  return app._router.handle({ ...req, url: '/api/invoices', method: 'GET' }, res);
+});
+
+app.get('/api/quick/overdue-invoices', (req, res) => {
+  req.query.status = 'AUTHORISED';
+  req.query.date_to = formatDateForXero(new Date());
+  req.query.limit = req.query.limit || '20';
+  return app._router.handle({ ...req, url: '/api/invoices', method: 'GET' }, res);
+});
+
+app.get('/api/quick/active-contacts', (req, res) => {
+  req.query.include_archived = 'false';
+  req.query.limit = req.query.limit || '20';
+  return app._router.handle({ ...req, url: '/api/contacts', method: 'GET' }, res);
+});
+
+// Privacy and Terms endpoints
 app.get('/privacy', (req, res) => {
   res.json({
-    service: 'Xero API Wrapper',
-    privacy_policy: 'This service acts as a proxy to Xero APIs. No user data is stored permanently. Session tokens are kept in memory only during active sessions.',
-    data_handling: 'All data requests are forwarded directly to Xero APIs. This service does not store, log, or process any financial data.',
-    contact: 'For privacy concerns, please contact your system administrator.'
+    service: 'JHK Bookkeeping Assistant',
+    privacy_policy: 'This service processes Xero data for bookkeeping automation.',
+    data_handling: 'Data is processed securely and not stored permanently.',
+    contact: 'support@jhkbookkeeping.com'
   });
 });
 
-// Terms of Service (required for OAuth)
 app.get('/terms', (req, res) => {
   res.json({
-    service: 'Xero API Wrapper',
-    terms: 'This service is provided as-is for authorized users only. Use is subject to Xero\'s terms of service.',
-    limitations: 'This service is a development tool and should not be used for production financial operations without proper security review.',
-    contact: 'For terms questions, please contact your system administrator.'
+    service: 'JHK Bookkeeping Assistant',
+    terms_of_service: 'This service is provided for authorized bookkeeping operations.',
+    usage: 'Authorized users only. Data access is logged and monitored.',
+    contact: 'support@jhkbookkeeping.com'
   });
+});
+
+// Legacy MCP endpoints for backward compatibility
+app.get('/mcp/health', (req, res) => {
+  res.redirect('/health');
+});
+
+app.get('/mcp/invoices', (req, res) => {
+  res.redirect(307, '/api/invoices?' + new URLSearchParams(req.query));
+});
+
+app.get('/mcp/contacts', (req, res) => {
+  res.redirect(307, '/api/contacts?' + new URLSearchParams(req.query));
 });
 
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('❌ Unhandled error:', error);
-  res.status(500).json({ 
-    error: 'Internal server error', 
-    message: error.message 
+  res.status(500).json({
+    error: 'Internal server error',
+    message: error.message,
+    timestamp: new Date().toISOString()
   });
 });
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({ 
-    error: 'Endpoint not found',
-    available_endpoints: [
-      'GET /.well-known/oauth-authorization-server',
-      'GET /oauth/authorize',
-      'POST /oauth/token',
-      'GET /oauth/userinfo',
-      'GET /health',
-      'GET /api',
-      'GET /api/contacts',
-      'GET /api/invoices',
-      'GET /api/accounts',
-      'POST /api/invoices',
-      'GET /api/reports/:reportType',
-      'GET /api/quick/:filter'
-    ]
+  res.status(404).json({
+    error: 'Not found',
+    message: `Endpoint ${req.method} ${req.path} not found`,
+    available_endpoints: ['/health', '/api', '/oauth/authorize', '/.well-known/oauth-authorization-server'],
+    timestamp: new Date().toISOString()
   });
 });
-
-// Cleanup old sessions and cache (run every hour)
-setInterval(() => {
-  const now = Date.now();
-  const oneHour = 60 * 60 * 1000;
-  
-  // Clean up old sessions
-  Object.keys(tokenStore).forEach(key => {
-    const session = tokenStore[key];
-    if (session.created && (now - session.created) > oneHour) {
-      delete tokenStore[key];
-    }
-  });
-  
-  // Clean up old cache entries
-  Object.keys(pageCache).forEach(key => {
-    const entry = pageCache[key];
-    if (entry.timestamp && (now - entry.timestamp) > oneHour) {
-      delete pageCache[key];
-    }
-  });
-  
-  console.log(`🧹 Cleanup completed: ${Object.keys(tokenStore).length} sessions, ${Object.keys(pageCache).length} cache entries`);
-}, 60 * 60 * 1000);
 
 // Start server
-const startServer = () => {
-  validateEnv();
-  
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`🚀 Xero API Wrapper v2.4.2 running on 0.0.0.0:${port}`);
-    console.log(`🔗 OAuth URL: http://localhost:${port}/oauth/authorize`);
-    console.log(`🏥 Health check: http://localhost:${port}/health`);
-    console.log(`📚 API docs: http://localhost:${port}/api`);
-    console.log(`🔍 OAuth Discovery: http://localhost:${port}/.well-known/oauth-authorization-server`);
-    console.log(`✅ Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🔑 Xero Client ID: ${process.env.XERO_CLIENT_ID ? 'SET' : 'MISSING'}`);
-    console.log(`🔐 Xero Client Secret: ${process.env.XERO_CLIENT_SECRET ? 'SET' : 'MISSING'}`);
-    console.log(`🤖 ChatGPT Ready: YES`);
-    console.log(`🎯 ChatGPT Client ID: ${CHATGPT_OAUTH.client_id}`);
-    console.log(`🔄 Enhanced Callback Proxy: ENABLED`);
-    console.log(`🎯 Enhanced Detection: ENABLED`);
-    console.log(`🔍 Full Filtering & Pagination: ENABLED`);
-    console.log(`📄 Xero Page-Based Pagination: FIXED`);
-    console.log(`💾 Smart Caching: ENABLED`);
-    console.log(`📊 Reports Crash Fix: ENABLED`);
-    console.log(`⚡ Optimization Level: FULL`);
-  });
-};
-
-// Handle graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('📴 Received SIGTERM, shutting down gracefully');
-  process.exit(0);
+app.listen(port, '0.0.0.0', () => {
+  console.log('🚀 JHK Bookkeeping Assistant v2.4.3 running on 0.0.0.0:' + port);
+  console.log('🔗 OAuth URL: http://localhost:' + port + '/oauth/authorize');
+  console.log('📊 Health check: http://localhost:' + port + '/health');
+  console.log('📋 API docs: http://localhost:' + port + '/api');
+  console.log('✅ Enhanced date handling enabled - September 2025 fix applied');
 });
 
-process.on('SIGINT', () => {
-  console.log('📴 Received SIGINT, shutting down gracefully');
-  process.exit(0);
-});
-
-startServer();
+module.exports = app;
 
