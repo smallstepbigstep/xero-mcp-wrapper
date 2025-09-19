@@ -33,7 +33,7 @@ const getBaseUrl = (req) => {
   return `${protocol}://${host}`;
 };
 
-// Enhanced ChatGPT request detection function (v2.4.6 - CONTACTS FIX)
+// Enhanced ChatGPT request detection function (v2.4.7 - DATE FIX)
 const isChatGPTRequest = (client_id, redirect_uri) => {
   // Primary detection: redirect_uri contains ChatGPT pattern (MORE RELIABLE)
   if (redirect_uri && redirect_uri.includes('chat.openai.com/aip/')) {
@@ -50,7 +50,7 @@ const isChatGPTRequest = (client_id, redirect_uri) => {
   return false;
 };
 
-// Enhanced date utility functions for v2.4.3/v2.4.4/v2.4.5/v2.4.6
+// Enhanced date utility functions for v2.4.7
 const formatDateForXero = (dateString) => {
   if (!dateString) return null;
   
@@ -81,11 +81,11 @@ const getMonthName = (monthNumber) => {
   return months[monthNumber - 1];
 };
 
-// Enhanced date parsing function for v2.4.3/v2.4.4/v2.4.5/v2.4.6
+// FIXED: Enhanced date parsing function for v2.4.7 - No default date filtering
 const parseRequestedPeriod = (query) => {
   const { period, month, year, from_date, to_date, days_ago } = query;
   
-  console.log('📅 Parsing date request v2.4.6:', query);
+  console.log('📅 Parsing date request v2.4.7:', query);
   
   // Handle natural language dates
   if (period) {
@@ -163,16 +163,13 @@ const parseRequestedPeriod = (query) => {
     };
   }
   
-  // Default to current month if no dates specified
-  const now = new Date();
-  const currentMonth = now.getMonth() + 1;
-  const currentYear = now.getFullYear();
-  const lastDay = new Date(currentYear, currentMonth, 0).getDate();
-  
+  // FIXED: Return null when no date parameters provided (v2.4.7)
+  // This allows fetching ALL data without date restrictions
+  console.log('✅ No date filters specified - returning all data');
   return {
-    from_date: `${currentYear}-${currentMonth.toString().padStart(2, '0')}-01`,
-    to_date: `${currentYear}-${currentMonth.toString().padStart(2, '0')}-${lastDay}`,
-    description: `Default current month (${getMonthName(currentMonth)} ${currentYear})`
+    from_date: null,
+    to_date: null,
+    description: 'All periods (no date filter)'
   };
 };
 
@@ -198,7 +195,7 @@ const generateCacheKey = (baseUrl, filters, page) => {
   return `${baseUrl}_${filterStr}_page${page}`;
 };
 
-// Build Xero API URL with filters and pagination (v2.4.6 - CONTACTS FIX)
+// Build Xero API URL with filters and pagination (v2.4.7 - DATE FIX)
 const buildXeroUrl = (baseUrl, filters = {}, page = 1) => {
   const url = new URL(baseUrl);
   
@@ -209,14 +206,15 @@ const buildXeroUrl = (baseUrl, filters = {}, page = 1) => {
     whereConditions.push(`Status="${filters.status}"`);
   }
   
-  if (filters.date_from) {
+  // FIXED: Only apply date filters if they are not null (v2.4.7)
+  if (filters.date_from && filters.date_from !== null) {
     const formattedDate = formatDateForXero(filters.date_from);
     if (formattedDate) {
       whereConditions.push(`Date>DateTime(${formattedDate})`);
     }
   }
   
-  if (filters.date_to) {
+  if (filters.date_to && filters.date_to !== null) {
     const formattedDate = formatDateForXero(filters.date_to);
     if (formattedDate) {
       whereConditions.push(`Date<DateTime(${formattedDate})`);
@@ -227,7 +225,7 @@ const buildXeroUrl = (baseUrl, filters = {}, page = 1) => {
     whereConditions.push(`Name.Contains("${filters.name_contains}")`);
   }
   
-  // FIXED: Contacts don't have IsArchived field, use ContactStatus instead (v2.4.6)
+  // FIXED: Contacts don't have IsArchived field, use ContactStatus instead (v2.4.6+)
   if (filters.include_archived === false) {
     if (baseUrl.includes('/Contacts')) {
       whereConditions.push(`ContactStatus!="ARCHIVED"`);
@@ -253,12 +251,12 @@ const buildXeroUrl = (baseUrl, filters = {}, page = 1) => {
   return url.toString();
 };
 
-// Health check endpoint with v2.4.6 info
+// Health check endpoint with v2.4.7 info
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     service: 'JHK Bookkeeping Assistant',
-    version: '2.4.6',
+    version: '2.4.7',
     features: {
       chatgpt_ready: true,
       enhanced_detection: true,
@@ -267,7 +265,8 @@ app.get('/health', (req, res) => {
       september_2025_support: true,
       relaxed_client_id_validation: true,
       oauth_scope_fix: true,
-      contacts_api_fix: true
+      contacts_api_fix: true,
+      no_default_date_filtering: true
     },
     oauth_fixes: {
       redirect_uri_based_detection: true,
@@ -278,13 +277,15 @@ app.get('/health', (req, res) => {
     api_fixes: {
       contacts_filtering: 'Fixed IsArchived -> ContactStatus',
       date_handling: 'Enhanced natural language parsing',
-      pagination: 'Optimized with caching'
+      pagination: 'Optimized with caching',
+      default_date_filtering: 'Removed - now returns all data by default'
     },
     date_handling: {
       natural_language: true,
       formats_supported: ['YYYY-MM-DD', 'DD/MM/YYYY', 'period=september-2025'],
       current_month_detection: true,
-      validation: true
+      validation: true,
+      default_behavior: 'No date filtering - returns all data'
     },
     timestamp: new Date().toISOString()
   });
@@ -326,11 +327,11 @@ app.get('/.well-known/jwks.json', (req, res) => {
   });
 });
 
-// OAuth authorization endpoint with enhanced ChatGPT detection (v2.4.6 - CONTACTS FIX)
+// OAuth authorization endpoint with enhanced ChatGPT detection (v2.4.7 - DATE FIX)
 app.get('/oauth/authorize', (req, res) => {
   const { client_id, redirect_uri, response_type, scope, state } = req.query;
   
-  console.log('🔐 OAuth Authorization Request v2.4.6:', {
+  console.log('🔐 OAuth Authorization Request v2.4.7:', {
     client_id: client_id || 'none',
     redirect_uri,
     response_type,
@@ -485,11 +486,11 @@ app.get('/oauth/callback', async (req, res) => {
   }
 });
 
-// Token endpoint for ChatGPT (v2.4.6 - CONTACTS FIX)
+// Token endpoint for ChatGPT (v2.4.7 - DATE FIX)
 app.post('/oauth/token', async (req, res) => {
   const { grant_type, code, client_id, client_secret } = req.body;
   
-  console.log('🔑 Token request received v2.4.6:', {
+  console.log('🔑 Token request received v2.4.7:', {
     grant_type,
     client_id: client_id || 'none',
     hasCode: !!code,
@@ -587,7 +588,7 @@ app.get('/oauth/userinfo', async (req, res) => {
   }
 });
 
-// API endpoint to get contacts with enhanced pagination (v2.4.6 - CONTACTS FIX)
+// API endpoint to get contacts with enhanced pagination (v2.4.6+ - CONTACTS FIX)
 app.get('/api/contacts', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -626,7 +627,7 @@ app.get('/api/contacts', async (req, res) => {
       console.log('🔄 Fetching contacts page from Xero:', xeroPage);
       const xeroUrl = buildXeroUrl('https://api.xero.com/api.xro/2.0/Contacts', filters, xeroPage);
       
-      console.log('🔗 Xero URL (v2.4.6 contacts fix):', xeroUrl);
+      console.log('🔗 Xero URL (v2.4.7 date fix):', xeroUrl);
       
       const response = await axios.get(xeroUrl, {
         headers: {
@@ -691,7 +692,7 @@ app.get('/api/contacts', async (req, res) => {
   }
 });
 
-// API endpoint to get invoices with enhanced date handling and pagination (v2.4.3+)
+// API endpoint to get invoices with enhanced date handling and pagination (v2.4.7 - DATE FIX)
 app.get('/api/invoices', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -709,7 +710,7 @@ app.get('/api/invoices', async (req, res) => {
   try {
     const { offset = 0, limit = 100, status, contact_id } = req.query;
     
-    // Enhanced date parsing (v2.4.3+)
+    // Enhanced date parsing (v2.4.7 - FIXED: No default date filtering)
     const dateFilter = parseRequestedPeriod(req.query);
     console.log('📅 Using date filter:', dateFilter);
     
@@ -734,6 +735,8 @@ app.get('/api/invoices', async (req, res) => {
     } else {
       console.log('🔄 Fetching invoices page from Xero:', xeroPage);
       const xeroUrl = buildXeroUrl('https://api.xero.com/api.xro/2.0/Invoices', filters, xeroPage);
+      
+      console.log('🔗 Xero URL (v2.4.7 date fix):', xeroUrl);
       
       const response = await axios.get(xeroUrl, {
         headers: {
@@ -831,7 +834,7 @@ app.get('/api/bank-transactions', async (req, res) => {
   try {
     const { offset = 0, limit = 100, bank_account_id } = req.query;
     
-    // Enhanced date parsing (v2.4.3+)
+    // Enhanced date parsing (v2.4.7 - FIXED: No default date filtering)
     const dateFilter = parseRequestedPeriod(req.query);
     console.log('📅 Using date filter for bank transactions:', dateFilter);
     
@@ -971,7 +974,7 @@ app.get('/api/reports/:reportType', async (req, res) => {
   }
   
   try {
-    // Enhanced date parsing (v2.4.3+)
+    // Enhanced date parsing (v2.4.7 - FIXED: No default date filtering)
     const dateFilter = parseRequestedPeriod(req.query);
     console.log(`📊 Generating ${reportType} report for ${dateFilter.description}`);
     
@@ -979,10 +982,11 @@ app.get('/api/reports/:reportType', async (req, res) => {
     let reportUrl = `https://api.xero.com/api.xro/2.0/Reports/${reportType}`;
     const params = new URLSearchParams();
     
-    if (dateFilter.from_date) {
+    // Only add date parameters if they are not null (v2.4.7)
+    if (dateFilter.from_date && dateFilter.from_date !== null) {
       params.append('fromDate', dateFilter.from_date);
     }
-    if (dateFilter.to_date) {
+    if (dateFilter.to_date && dateFilter.to_date !== null) {
       params.append('toDate', dateFilter.to_date);
     }
     
@@ -1128,11 +1132,12 @@ app.get('/api/accounts', async (req, res) => {
 app.get('/api', (req, res) => {
   res.json({
     service: 'JHK Bookkeeping Assistant',
-    version: '2.4.6',
+    version: '2.4.7',
     description: 'ChatGPT-compatible Xero API wrapper with OAuth 2.0 support',
     fixes: {
       v2_4_5: 'Fixed invalid_scope error with correct Xero OAuth scopes',
-      v2_4_6: 'Fixed contacts API filtering (IsArchived -> ContactStatus)'
+      v2_4_6: 'Fixed contacts API filtering (IsArchived -> ContactStatus)',
+      v2_4_7: 'Fixed default date filtering - now returns all data by default'
     },
     oauth_fixes: {
       scope_fix: 'Fixed invalid_scope error with correct Xero OAuth scopes',
@@ -1142,7 +1147,8 @@ app.get('/api', (req, res) => {
     api_fixes: {
       contacts_filtering: 'Fixed IsArchived field error for contacts',
       date_handling: 'Enhanced natural language date parsing',
-      pagination: 'Optimized pagination with caching'
+      pagination: 'Optimized pagination with caching',
+      default_date_filtering: 'Removed - now returns all data by default'
     },
     endpoints: {
       oauth: {
@@ -1162,14 +1168,15 @@ app.get('/api', (req, res) => {
       chatgpt_oauth: 'Full ChatGPT Actions OAuth 2.0 support',
       date_handling: 'Enhanced natural language date parsing',
       pagination: 'Efficient pagination with caching',
-      error_handling: 'Comprehensive error handling and logging'
+      error_handling: 'Comprehensive error handling and logging',
+      no_default_filtering: 'Returns all data by default unless date filters specified'
     }
   });
 });
 
 // Start server
 app.listen(port, () => {
-  console.log(`🚀 JHK Bookkeeping Assistant v2.4.6 running on port ${port}`);
+  console.log(`🚀 JHK Bookkeeping Assistant v2.4.7 running on port ${port}`);
   console.log('✅ ChatGPT OAuth 2.0 ready');
   console.log('✅ Enhanced date handling active');
   console.log('✅ Pagination and caching enabled');
