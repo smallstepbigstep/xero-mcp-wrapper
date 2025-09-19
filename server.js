@@ -33,7 +33,7 @@ const getBaseUrl = (req) => {
   return `${protocol}://${host}`;
 };
 
-// Enhanced ChatGPT request detection function (v2.4.5 - SCOPE FIX)
+// Enhanced ChatGPT request detection function (v2.4.6 - CONTACTS FIX)
 const isChatGPTRequest = (client_id, redirect_uri) => {
   // Primary detection: redirect_uri contains ChatGPT pattern (MORE RELIABLE)
   if (redirect_uri && redirect_uri.includes('chat.openai.com/aip/')) {
@@ -50,7 +50,7 @@ const isChatGPTRequest = (client_id, redirect_uri) => {
   return false;
 };
 
-// Enhanced date utility functions for v2.4.3/v2.4.4/v2.4.5
+// Enhanced date utility functions for v2.4.3/v2.4.4/v2.4.5/v2.4.6
 const formatDateForXero = (dateString) => {
   if (!dateString) return null;
   
@@ -81,11 +81,11 @@ const getMonthName = (monthNumber) => {
   return months[monthNumber - 1];
 };
 
-// Enhanced date parsing function for v2.4.3/v2.4.4/v2.4.5
+// Enhanced date parsing function for v2.4.3/v2.4.4/v2.4.5/v2.4.6
 const parseRequestedPeriod = (query) => {
   const { period, month, year, from_date, to_date, days_ago } = query;
   
-  console.log('📅 Parsing date request v2.4.5:', query);
+  console.log('📅 Parsing date request v2.4.6:', query);
   
   // Handle natural language dates
   if (period) {
@@ -198,7 +198,7 @@ const generateCacheKey = (baseUrl, filters, page) => {
   return `${baseUrl}_${filterStr}_page${page}`;
 };
 
-// Build Xero API URL with filters and pagination
+// Build Xero API URL with filters and pagination (v2.4.6 - CONTACTS FIX)
 const buildXeroUrl = (baseUrl, filters = {}, page = 1) => {
   const url = new URL(baseUrl);
   
@@ -227,8 +227,14 @@ const buildXeroUrl = (baseUrl, filters = {}, page = 1) => {
     whereConditions.push(`Name.Contains("${filters.name_contains}")`);
   }
   
+  // FIXED: Contacts don't have IsArchived field, use ContactStatus instead (v2.4.6)
   if (filters.include_archived === false) {
-    whereConditions.push(`IsArchived==false`);
+    if (baseUrl.includes('/Contacts')) {
+      whereConditions.push(`ContactStatus!="ARCHIVED"`);
+    } else {
+      // For other entities that might have IsArchived
+      whereConditions.push(`IsArchived==false`);
+    }
   }
   
   // Add where clause if we have conditions
@@ -247,12 +253,12 @@ const buildXeroUrl = (baseUrl, filters = {}, page = 1) => {
   return url.toString();
 };
 
-// Health check endpoint with v2.4.5 info
+// Health check endpoint with v2.4.6 info
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     service: 'JHK Bookkeeping Assistant',
-    version: '2.4.5',
+    version: '2.4.6',
     features: {
       chatgpt_ready: true,
       enhanced_detection: true,
@@ -260,13 +266,19 @@ app.get('/health', (req, res) => {
       date_handling_fixed: true,
       september_2025_support: true,
       relaxed_client_id_validation: true,
-      oauth_scope_fix: true
+      oauth_scope_fix: true,
+      contacts_api_fix: true
     },
     oauth_fixes: {
       redirect_uri_based_detection: true,
       missing_client_id_handling: true,
       chatgpt_compatibility: 'enhanced',
       valid_xero_scopes: true
+    },
+    api_fixes: {
+      contacts_filtering: 'Fixed IsArchived -> ContactStatus',
+      date_handling: 'Enhanced natural language parsing',
+      pagination: 'Optimized with caching'
     },
     date_handling: {
       natural_language: true,
@@ -314,11 +326,11 @@ app.get('/.well-known/jwks.json', (req, res) => {
   });
 });
 
-// OAuth authorization endpoint with enhanced ChatGPT detection (v2.4.5 - SCOPE FIX)
+// OAuth authorization endpoint with enhanced ChatGPT detection (v2.4.6 - CONTACTS FIX)
 app.get('/oauth/authorize', (req, res) => {
   const { client_id, redirect_uri, response_type, scope, state } = req.query;
   
-  console.log('🔐 OAuth Authorization Request v2.4.5:', {
+  console.log('🔐 OAuth Authorization Request v2.4.6:', {
     client_id: client_id || 'none',
     redirect_uri,
     response_type,
@@ -371,7 +383,7 @@ app.get('/oauth/authorize', (req, res) => {
     timestamp: Date.now()
   };
   
-  // FIXED: Use correct Xero OAuth scopes (v2.4.5)
+  // FIXED: Use correct Xero OAuth scopes (v2.4.5+)
   // Based on Xero documentation: accounting.transactions, accounting.contacts, accounting.reports.read, accounting.settings
   const xeroScopes = 'accounting.transactions accounting.contacts accounting.reports.read accounting.settings offline_access';
   
@@ -473,11 +485,11 @@ app.get('/oauth/callback', async (req, res) => {
   }
 });
 
-// Token endpoint for ChatGPT (v2.4.5 - SCOPE FIX)
+// Token endpoint for ChatGPT (v2.4.6 - CONTACTS FIX)
 app.post('/oauth/token', async (req, res) => {
   const { grant_type, code, client_id, client_secret } = req.body;
   
-  console.log('🔑 Token request received v2.4.5:', {
+  console.log('🔑 Token request received v2.4.6:', {
     grant_type,
     client_id: client_id || 'none',
     hasCode: !!code,
@@ -575,7 +587,7 @@ app.get('/oauth/userinfo', async (req, res) => {
   }
 });
 
-// API endpoint to get contacts with enhanced pagination (v2.4.1+)
+// API endpoint to get contacts with enhanced pagination (v2.4.6 - CONTACTS FIX)
 app.get('/api/contacts', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -613,6 +625,8 @@ app.get('/api/contacts', async (req, res) => {
     } else {
       console.log('🔄 Fetching contacts page from Xero:', xeroPage);
       const xeroUrl = buildXeroUrl('https://api.xero.com/api.xro/2.0/Contacts', filters, xeroPage);
+      
+      console.log('🔗 Xero URL (v2.4.6 contacts fix):', xeroUrl);
       
       const response = await axios.get(xeroUrl, {
         headers: {
@@ -1114,12 +1128,21 @@ app.get('/api/accounts', async (req, res) => {
 app.get('/api', (req, res) => {
   res.json({
     service: 'JHK Bookkeeping Assistant',
-    version: '2.4.5',
+    version: '2.4.6',
     description: 'ChatGPT-compatible Xero API wrapper with OAuth 2.0 support',
+    fixes: {
+      v2_4_5: 'Fixed invalid_scope error with correct Xero OAuth scopes',
+      v2_4_6: 'Fixed contacts API filtering (IsArchived -> ContactStatus)'
+    },
     oauth_fixes: {
       scope_fix: 'Fixed invalid_scope error with correct Xero OAuth scopes',
       redirect_uri_detection: 'Enhanced ChatGPT detection via redirect_uri pattern',
       relaxed_validation: 'Accepts missing client_id for ChatGPT compatibility'
+    },
+    api_fixes: {
+      contacts_filtering: 'Fixed IsArchived field error for contacts',
+      date_handling: 'Enhanced natural language date parsing',
+      pagination: 'Optimized pagination with caching'
     },
     endpoints: {
       oauth: {
@@ -1146,8 +1169,9 @@ app.get('/api', (req, res) => {
 
 // Start server
 app.listen(port, () => {
-  console.log(`🚀 JHK Bookkeeping Assistant v2.4.5 running on port ${port}`);
+  console.log(`🚀 JHK Bookkeeping Assistant v2.4.6 running on port ${port}`);
   console.log('✅ OAuth scope fix applied - invalid_scope error resolved');
+  console.log('✅ Contacts API fix applied - IsArchived field error resolved');
   console.log('✅ ChatGPT OAuth 2.0 ready');
   console.log('✅ Enhanced date handling active');
   console.log('✅ Pagination and caching enabled');
