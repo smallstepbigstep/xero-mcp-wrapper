@@ -1170,8 +1170,6 @@ app.get('/api', (req, res) => {
 // Start server
 app.listen(port, () => {
   console.log(`🚀 JHK Bookkeeping Assistant v2.4.6 running on port ${port}`);
-  console.log('✅ OAuth scope fix applied - invalid_scope error resolved');
-  console.log('✅ Contacts API fix applied - IsArchived field error resolved');
   console.log('✅ ChatGPT OAuth 2.0 ready');
   console.log('✅ Enhanced date handling active');
   console.log('✅ Pagination and caching enabled');
