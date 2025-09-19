@@ -1,7 +1,7 @@
 {
   "name": "xero-mcp-wrapper",
-  "version": "2.4.7",
-  "description": "ChatGPT-compatible Xero API wrapper with OAuth 2.0 support - Date filtering fix",
+  "version": "2.4.8",
+  "description": "ChatGPT-compatible Xero API wrapper with OAuth 2.0 support - Pagination & Date Parameter Fix",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -27,7 +27,9 @@
     "bookkeeping",
     "accounting",
     "wrapper",
-    "date-fix"
+    "pagination-fix",
+    "date-parameter-mapping",
+    "bulk-retrieval"
   ],
   "author": "JHK Bookkeeping Assistant",
   "license": "MIT"
