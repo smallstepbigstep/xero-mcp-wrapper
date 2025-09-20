@@ -1,7 +1,7 @@
 {
   "name": "xero-mcp-wrapper",
-  "version": "2.4.10",
-  "description": "ChatGPT-compatible Xero API wrapper with comprehensive business intelligence and security hardening",
+  "version": "2.4.10.1",
+  "description": "ChatGPT-compatible Xero API wrapper with comprehensive business intelligence, security hardening, and ChatGPT Actions compatibility",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -27,7 +27,8 @@
     "oauth",
     "bookkeeping",
     "business-intelligence",
-    "security-hardened"
+    "security-hardened",
+    "chatgpt-actions-compatible"
   ],
   "author": "JHK Bookkeeping Assistant",
   "license": "MIT"
